@@ -82,6 +82,59 @@ local function isMerchantTooltip(tooltip)
     return false
 end
 
+local function getItemBindEnum(name, fallback)
+    if Enum and Enum.ItemBind and tonumber(Enum.ItemBind[name]) ~= nil then
+        return tonumber(Enum.ItemBind[name])
+    end
+    return fallback
+end
+
+local function isCharacterBoundMetadata(metadata)
+    if not metadata then return false end
+    local bindType = tonumber(metadata.bindType)
+    if bindType == nil then return false end
+
+    -- Static item metadata can safely identify Bind on Pickup and quest-bound
+    -- items. Bind on Equip/Use items are deliberately excluded because a
+    -- stored copy is not necessarily bound yet.
+    return bindType == getItemBindEnum("OnAcquire", 1)
+        or bindType == getItemBindEnum("Quest", 4)
+end
+
+local function currentCharacterFirst(characters)
+    local ordered = {}
+    local currentKey = RB.GetCharacterKey and RB:GetCharacterKey() or nil
+    local currentEntry
+
+    for _, entry in ipairs(characters or {}) do
+        if currentKey and entry.key == currentKey then
+            currentEntry = entry
+        else
+            ordered[#ordered + 1] = entry
+        end
+    end
+
+    if currentEntry then
+        table.insert(ordered, 1, currentEntry)
+    end
+
+    return ordered
+end
+
+local function addCharacterLine(tooltip, entry, showLocations)
+    local r, g, b = getClassColor(entry.class)
+    local right = tostring(entry.total)
+
+    if showLocations then
+        local locations = locationText(entry)
+        if locations ~= "" then
+            right = string.format("%d  |cff9ca3af%s|r", entry.total, locations)
+        end
+    end
+
+    tooltip:AddDoubleLine(entry.name or entry.key, right, r, g, b, 1, 1, 1)
+end
+
 -- mUI adds its own blue/yellow item ID line to item tooltips and does not
 -- currently expose a setting to disable only that line. When RapzoBags is
 -- responsible for Item ID metadata, keep mUI's styling/NPC/spell IDs intact
@@ -151,10 +204,18 @@ function Tooltip:GetItemMetadata(itemID)
     local values = {pcall(getItemInfo, itemID)}
     if not values[1] then return nil end
 
+    -- pcall adds its success boolean at index 1, so every GetItemInfo return
+    -- value is shifted by one in this table.
     local name = values[2]
     local itemType = values[7]
     local itemSubType = values[8]
+    local itemStackCount = tonumber(values[9])
+    local sellPrice = tonumber(values[12]) or 0
+    local classID = tonumber(values[13])
+    local subclassID = tonumber(values[14])
+    local bindType = tonumber(values[15])
     local expacID = tonumber(values[16])
+    local isCraftingReagent = values[18] == true
 
     if not name and C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
         pcall(C_Item.RequestLoadItemDataByID, itemID)
@@ -174,6 +235,12 @@ function Tooltip:GetItemMetadata(itemID)
         name = name,
         itemType = itemType,
         itemSubType = itemSubType,
+        itemStackCount = itemStackCount,
+        sellPrice = sellPrice,
+        classID = classID,
+        subclassID = subclassID,
+        bindType = bindType,
+        isCraftingReagent = isCraftingReagent,
         typeText = typeText,
         expacID = expacID,
         expansionName = expansionName,
@@ -194,6 +261,7 @@ function Tooltip:AddItemInfo(tooltip, itemID)
     local metadata = self:GetItemMetadata(itemID)
     local aggregate = RB:GetItemAggregate(itemID)
     local hasCounts = aggregate and aggregate.total and aggregate.total > 0
+    local characterBound = isCharacterBoundMetadata(metadata)
 
     local showExpansion = db.settings.showItemExpansion ~= false and metadata and metadata.expansionName
     local showType = db.settings.showItemType ~= false and metadata and metadata.typeText
@@ -219,6 +287,37 @@ function Tooltip:AddItemInfo(tooltip, itemID)
     if not hasCounts then return end
 
     tooltip:AddLine(" ")
+
+    if characterBound then
+        -- A Bind on Pickup/quest item cannot be treated as one shared account
+        -- stock pool. Keep the useful per-character data, put the current
+        -- character first and avoid the misleading aggregate Total line.
+        tooltip:AddLine("En tus personajes", 0.55, 0.82, 1.00)
+
+        local configuredLimit = math.max(1, tonumber(db.settings.maxCharacters) or 12)
+        local boundLimit = metadata and metadata.isCraftingReagent and 8 or 4
+        local maxCharacters = math.min(configuredLimit, boundLimit)
+        local characters = currentCharacterFirst(aggregate.characters)
+        local shown = 0
+
+        for _, entry in ipairs(characters) do
+            if shown >= maxCharacters then break end
+            shown = shown + 1
+            addCharacterLine(tooltip, entry, db.settings.showLocations)
+        end
+
+        if #characters > shown then
+            tooltip:AddDoubleLine("Otros personajes", "+" .. (#characters - shown), 0.65, 0.65, 0.65, 0.65, 0.65, 0.65)
+        end
+
+        if aggregate.accountBank > 0 then
+            tooltip:AddDoubleLine("Banco de banda de guerra", tostring(aggregate.accountBank), 0.90, 0.77, 0.37, 1, 1, 1)
+        end
+
+        tooltip:AddLine("Ligado al personaje · las cantidades no se comparten", 0.72, 0.75, 0.80)
+        return
+    end
+
     tooltip:AddLine("En tu cuenta", 0.55, 0.82, 1.00)
 
     local maxCharacters = tonumber(db.settings.maxCharacters) or 12
@@ -226,15 +325,7 @@ function Tooltip:AddItemInfo(tooltip, itemID)
     for _, entry in ipairs(aggregate.characters) do
         if shown >= maxCharacters then break end
         shown = shown + 1
-        local r, g, b = getClassColor(entry.class)
-        local right = tostring(entry.total)
-        if db.settings.showLocations then
-            local locations = locationText(entry)
-            if locations ~= "" then
-                right = string.format("%d  |cff9ca3af%s|r", entry.total, locations)
-            end
-        end
-        tooltip:AddDoubleLine(entry.name or entry.key, right, r, g, b, 1, 1, 1)
+        addCharacterLine(tooltip, entry, db.settings.showLocations)
     end
 
     if #aggregate.characters > shown then
