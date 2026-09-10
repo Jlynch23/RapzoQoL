@@ -56,7 +56,14 @@ solo addon:
 - filtro automatico de expansion actual en AH y pedidos de fabricacion;
 - pantalla AFK;
 - HUD visual con aro del cursor, minimapa cuadrado y Unit Frames;
+- aviso de cooldown listo (Cooldown Pulse) y texto de combate personalizado (Combat Text);
+- anuncio de Spell Reflection (ReflectHerald);
 - panel de configuracion propio y panel en las opciones de Blizzard.
+
+Principio de Rapzo: cuantos menos addons, mejor. Rapzo QoL va absorbiendo los addons pequenos
+que usa (tipo FontsDamage, SquareMinimap, cursor, texto de combate) como modulos con su propio
+toggle, para que un fallo se apague desde Config sin perder el resto. La politica y el checklist
+para absorber uno estan en la seccion 16.
 
 World of Warcraft debe ver una sola carpeta:
 
@@ -374,7 +381,7 @@ La AH se cubre con hook del mixin y del frame real. Pedidos de fabricacion se re
 `SetDefaultFilters()`, `Init()` y `OnShow`, porque Blizzard reconstruye filtros al abrir la ventana.
 El addon cambia el estado del filtro, pero no lanza automaticamente la busqueda.
 
-Solo tiene control por slash command; actualmente no tiene checkbox propio en Config:
+Tiene checkbox en los dos paneles de Config (desde 2026-09-10) y slash command:
 
 ```text
 /rapzo expfilter on|off
@@ -433,9 +440,18 @@ Controles actuales principales:
 - Unit Frames Rapzo;
 - minimapa cuadrado;
 - aro del mouse;
+- filtro de expansion actual (AH);
+- ReflectHerald;
+- Cooldown Pulse (ademas con subcategoria Blizzard propia);
+- Combat Text (ademas con subcategoria Blizzard propia);
 - selector V1 Clasico / V2 ToxiUI;
 - preview/depuracion del HUD;
 - reescaneo.
+
+Las listas de estado y el contador "N/M modulos activos" salen de `RB.moduleKeys`; un modulo
+nuevo aparece ahi solo con anadir su clave a esa lista en `Core.lua`. Los checkboxes si hay que
+crearlos a mano en `Config:CreateFrame()` y `Config:CreateSettingsPanel()` (dos columnas, filas
+de 32 px).
 
 Los indicadores de estado de Vendor y HUD fueron corregidos recientemente: Vendor tolera que
 `settings.vendor` aun no exista y HUD muestra el switch real de Unit Frames, no el contenedor
@@ -456,8 +472,7 @@ Anuncia el hechizo devuelto por Spell Reflection:
 Detecta `SPELL_MISSED` con `missType == "REFLECT"` sobre el jugador en
 `COMBAT_LOG_EVENT_UNFILTERED`. Todo el handler va dentro de `pcall` porque en contenido
 restringido de Midnight los valores del combat log pueden ser secretos. El toggle del modulo es
-`settings.modules.reflectHerald`. Como el filtro de expansion, por ahora se controla solo por
-slash command, sin checkbox propio en Config.
+`settings.modules.reflectHerald`, con checkbox en Config (desde 2026-09-10) y slash command.
 
 **Hallazgo real de Midnight (2-sep, taint.log de IRONSIDE): el REGISTRO de
 `COMBAT_LOG_EVENT_UNFILTERED` es una accion bloqueada para addons.** No lanza error de Lua — el
@@ -500,7 +515,7 @@ Plan de desarrollo del modulo, en orden:
    personalizable o aleatorio entre varias frases.
 5. **Resumen post-run**: donde Midnight bloquee el CLEU en vivo, explorar un conteo diferido
    al terminar la instancia si alguna API lo permite; si no es viable, documentarlo y cerrar.
-6. **Checkbox en Config** cuando el modulo quede estable, junto al resto de toggles.
+6. **Checkbox en Config** — hecho el 2026-09-10 (`ReflectHerald:SetEnabled`).
 
 Cada fase se valida en juego antes de pasar a la siguiente; no adelantar fases sin necesidad.
 
@@ -1044,3 +1059,118 @@ No asumas que una ruta de IRONSIDE existe en TEXTIL LAURA ni viceversa.
 - mUI es una compatibilidad prioritaria, especialmente en Target/Focus, auras y castbars.
 - Las capturas y pruebas de Rapzo dentro de WoW son la validacion visual final.
 - Terminar cada cambio con diff revisado, commit claro y rama remota actualizada.
+- Cada addon absorbido entra como modulo con toggle, reversible y sin librerias (seccion 16).
+
+## 16. Politica de absorcion de addons
+
+Objetivo: que Rapzo juegue con el minimo de addons. Cuando Rapzo diga "quiero meter X dentro de
+Rapzo QoL", seguir esto sin pedir mas confirmacion que la propia peticion.
+
+### 16.1 Criba: que entra y que no
+
+| Tipo de addon | Veredicto | Ejemplos / motivo |
+|---|---|---|
+| Solo cambia fuentes, CVars, texturas, mascaras, anclajes o tamanos de la UI | **Entra, facil** | FontsDamage, SquareMinimap, aro del cursor, Combat Text: ya hay varios dentro |
+| Engancha frames de Blizzard con `hooksecurefunc` o crea frames propios | **Entra, medio** | Vendor, Unit Frames: exige probar en combate, Edit Mode y con mUI |
+| Escanea inventario, tooltips, colecciones, spellbook, cooldowns | **Entra, medio** | Tooltip, Search, Cooldown Pulse: cuidado con valores secretos |
+| Depende de `COMBAT_LOG_EVENT_UNFILTERED` | **No** | Medidores de dano, alertas por combat log: el cliente 12.x bloquea el registro (seccion 8.10) |
+| Necesita mover/mostrar frames protegidos en combate | **No** | Action bars, nameplates seguras, unit frames que sustituyen al de Blizzard |
+| Trae Ace3, LibStub, LibSharedMedia u otra libreria como dependencia | **Solo reescrito** | Se reimplementa la logica sin la libreria; una libreria opcional (como LSM en Combat Text) se tolera si el modulo funciona sin ella |
+| Es grande (miles de lineas) o cambia toda la UI | **No, salvo peticion expresa** | ElvUI-likes, mUI: mejor convivir con ellos que absorberlos |
+
+Antes de absorber, decirle a Rapzo en una linea en cual fila cae y cuanto cuesta.
+
+### 16.2 Checklist para absorber un addon (en este orden)
+
+1. **Leer el addon original completo** y anotar: que globales/CVars/frames toca, que eventos usa,
+   que guarda en SavedVariables y que librerias trae.
+2. **Crear `Modules/<Nombre>/<Nombre>.lua`** con el esqueleto de la seccion 16.3 y anadirlo al TOC
+   despues de los modulos y antes de `Modules/HUD/HUD.lua` (o dentro del bloque HUD si amplia
+   `RB.HUD`).
+3. **Registrar el modulo**: `RB:RegisterModule("clave", M)`, clave en `RB.moduleKeys` (Core.lua),
+   default en `EnsureDB` (`modules.clave = true/false`; OFF si puede pelear con otro addon que
+   Rapzo aun tenga instalado).
+4. **Settings**: bloque `settings.clave` con la regla "rellenar solo nil"; si el addon original
+   tenia SavedVariables utiles, ofrecer importarlas una vez (`settings.clave.importedFrom`).
+5. **Reversibilidad**: snapshot del estado original (alpha, puntos, tamano, fuente, mascara) la
+   primera vez que se toca, restauracion en `SetEnabled(false)` y al apagar la parte. Si toca
+   CVars que persisten en Config.wtf, foto pristina en la DB como Combat Text
+   (`GetCVarDefault` primero; si no, el primer valor visto con el modulo OFF). Nunca capturar
+   "original" en cada login.
+6. **Estilo defensivo**: `pcall` y `type(...) == "function"` en toda API de Blizzard,
+   `issecretvalue` antes de comparar/operar, `RB:RegisterEventSafe` /
+   `RB:RegisterUnitEventSafe`, nada de `SetPoint`/`Show`/`Hide` sobre frames protegidos en
+   combate (diferir a `PLAYER_REGEN_ENABLED`). Recordar que un `pcall` NO detecta acciones
+   bloqueadas por taint.
+7. **Rendimiento**: sin `EnsureDB` en `OnUpdate`; cachear settings; throttle en polls; un solo
+   timer diferido por rafaga de eventos.
+8. **Control**: `M:SetEnabled(enabled)`, comando `/rapzo <nombre> [status|on|off|...]` con
+   `helpText` (asi sale en `/rapzo help`), checkbox en `Config:CreateFrame()` y en
+   `Config:CreateSettingsPanel()`. Si tiene mas de tres opciones, subcategoria Blizzard propia
+   como Cooldown Pulse/Combat Text (`Settings.RegisterCanvasLayoutSubcategory` colgando de
+   `RB.Config.settingsCategory`, layout compacto: el canvas no tiene scroll).
+9. **Textos**: solo ASCII en chat y paneles (WoW no renderiza emojis ni el check `U+2713`).
+10. **Verificar offline**: sintaxis Lua 5.1 de todos los archivos y el arnes de stubs (cargar en
+    orden del TOC, disparar `ADDON_LOADED`/`PLAYER_LOGIN`/`PLAYER_ENTERING_WORLD`, ejecutar los
+    comandos, abrir los paneles). El arnes no vive en el repo; recrearlo si hace falta.
+11. **Documentar**: subseccion en la seccion 8, comandos en la 10, settings en la 7, modulo en la 6,
+    TOC en la 5, avance en la 11 y checklist de prueba en juego en la 13. README y LEEME.
+12. **Validar en juego** con Rapzo antes de absorber el siguiente: `/rl`, `/rapzo modules`,
+    `/rapzo <nombre> status`, ON/OFF desde Config sin `/reload`, y el checklist de la seccion 13
+    que aplique. Solo entonces Rapzo desinstala el addon original.
+
+### 16.3 Esqueleto minimo de un modulo
+
+```lua
+local addonName = ...
+local RB = _G.RapzoQoL or _G.RapzoBags
+if not RB then return end
+
+local M = {}
+RB.MiModulo = M
+RB:RegisterModule("miModulo", M)
+
+local settingsCache
+local function getSettings()
+    if settingsCache then return settingsCache end
+    local db = RB:EnsureDB()
+    db.settings.miModulo = type(db.settings.miModulo) == "table" and db.settings.miModulo or {}
+    local s = db.settings.miModulo
+    if s.opcion == nil then s.opcion = true end   -- rellenar solo nil
+    settingsCache = s
+    return s
+end
+
+local function isEnabled() return RB:IsFeatureEnabled("miModulo", true) end
+
+local original = {}                                -- snapshot para restaurar
+local function apply() --[[ tocar UI guardando original[...] la primera vez ]] end
+local function restore() --[[ devolver original[...] ]] end
+
+function M:SetEnabled(enabled)
+    RB:SetFeatureEnabled("miModulo", enabled and true or false, true)
+    if enabled then apply() else restore() end
+end
+
+function M:PrintStatus()
+    RB:Print(("MiModulo %s"):format(isEnabled() and "ON" or "OFF"))
+end
+
+RB:RegisterCommand("mimodulo", function(rest)
+    rest = string.lower(tostring(rest or ""))
+    if rest == "on" then M:SetEnabled(true) elseif rest == "off" then M:SetEnabled(false) end
+    M:PrintStatus()
+end, "/rapzo mimodulo [status|on|off] - que hace el modulo")
+
+local frame = CreateFrame("Frame")
+frame:SetScript("OnEvent", function(_, event, arg1)
+    if event == "PLAYER_LOGIN" then
+        getSettings()
+        if isEnabled() then apply() end
+    end
+end)
+RB:RegisterEventSafe(frame, "PLAYER_LOGIN")
+```
+
+Y en `Core.lua`: la clave en `RB.moduleKeys` y el default en `EnsureDB`. En `Config.lua`: un
+`makeCheck`/`makeSettingsCheck` que llame a `M:SetEnabled`.
