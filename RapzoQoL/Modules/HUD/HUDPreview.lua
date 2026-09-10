@@ -46,9 +46,13 @@ local function getSpellTexture(spellID)
         local ok, texture = pcall(C_Spell.GetSpellTexture, spellID)
         if ok and texture then return texture end
     end
-    if type(GetSpellTexture) == "function" then
-        local ok, texture = pcall(GetSpellTexture, spellID)
-        if ok and texture then return texture end
+end
+
+local function setSmallFont(fontString, size)
+    if STANDARD_TEXT_FONT then
+        pcall(fontString.SetFont, fontString, STANDARD_TEXT_FONT, size, "OUTLINE")
+    else
+        fontString:SetFontObject("GameFontHighlightSmall")
     end
 end
 
@@ -151,8 +155,8 @@ local function makeDemo(parent, key, title, color, classFile, isMob)
     health.RapzoQoLText:SetText(key == "player" and "1.24M / 1.24M  100%" or "82%")
     display.health = health
 
-    local power = makeStatusBar(display, 9, {0.22, 0.28, 0.38})
-    power:SetPoint("TOPLEFT", health, "BOTTOMLEFT", 0, -3)
+    local power = makeStatusBar(display, 10, {0.22, 0.28, 0.38})
+    power:SetPoint("TOPLEFT", health, "BOTTOMLEFT", 0, -4)
     power:SetPoint("RIGHT", health, "RIGHT", 0, 0)
     power:SetValue(key == "player" and 72 or 58)
     power.RapzoQoLText:SetText(key == "player" and "RAGE 72" or "POWER")
@@ -192,13 +196,13 @@ local function makeDemo(parent, key, title, color, classFile, isMob)
         end
 
         local duration = aura:CreateFontString(nil, "OVERLAY")
-        duration:SetFont(STANDARD_TEXT_FONT, 7, "OUTLINE")
+        setSmallFont(duration, 7)
         duration:SetPoint("CENTER", aura, "CENTER", 0, 0)
         duration:SetText(initialScenario.durations[i])
         aura.previewDuration = duration
 
         local count = aura:CreateFontString(nil, "OVERLAY")
-        count:SetFont(STANDARD_TEXT_FONT, 7, "OUTLINE")
+        setSmallFont(count, 7)
         count:SetPoint("BOTTOMRIGHT", aura, "BOTTOMRIGHT", 1, -1)
         count:SetText(initialScenario.counts[i])
         aura.previewCount = count
@@ -305,15 +309,19 @@ local function applyPreviewStyle(display, style)
         setPreviewShellVisible(display, true)
         display:SetSize(240, 64)
 
+        -- Deshacer lo que V2 cambio (alturas), igual que applyStyle1 real.
         display.nameText:ClearAllPoints()
+        display.nameText:SetHeight(14)
         display.nameText:SetPoint("TOPLEFT", display, "TOPLEFT", 6, -8)
         display.nameText:SetPoint("RIGHT", display, "RIGHT", -6, 0)
 
         display.health:ClearAllPoints()
+        display.health:SetHeight(24)
         display.health:SetPoint("TOPLEFT", display, "TOPLEFT", 6, -25)
         display.health:SetPoint("RIGHT", display, "RIGHT", -6, 0)
 
         display.power:ClearAllPoints()
+        display.power:SetHeight(10)
         display.power:SetPoint("TOPLEFT", display.health, "BOTTOMLEFT", 0, -4)
         display.power:SetPoint("RIGHT", display.health, "RIGHT", 0, 0)
 
@@ -364,7 +372,11 @@ function HUD:CreatePreview()
     end)
 
     local title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    title:SetPoint("LEFT", frame.TitleBg, "LEFT", 6, 0)
+    if frame.TitleBg then
+        title:SetPoint("LEFT", frame.TitleBg, "LEFT", 6, 0)
+    else
+        title:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -6)
+    end
     title:SetText("Rapzo QoL - HUD Preview")
     frame.RapzoQoLTitle = title
 
@@ -421,11 +433,29 @@ function HUD:CreatePreview()
     if high then high:SetText("2.50x") end
     if label then label:SetText("") end
 
+    -- SetFrameScale relayouta los frames reales: al arrastrar se aplica como
+    -- mucho cada 0.1 s, no en cada paso de 0.01.
+    local pendingScale
+    local function flushScale()
+        local value = pendingScale
+        pendingScale = nil
+        if value and type(HUD.SetFrameScale) == "function" then
+            HUD:SetFrameScale(value, true)
+        end
+    end
     slider:SetScript("OnValueChanged", function(_, value)
         value = math.floor((tonumber(value) or 1.50) * 100 + 0.5) / 100
         scaleValue:SetText(string.format("%.2fx  (~%dx%d px)", value, math.floor(STYLE2_WIDTH * value + 0.5), math.floor(STYLE2_HEIGHT * value + 0.5)))
-        if type(HUD.SetFrameScale) == "function" then
-            HUD:SetFrameScale(value, true)
+        if type(HUD.GetFrameScale) == "function" and math.abs((HUD:GetFrameScale() or 0) - value) < 0.001 then
+            return
+        end
+        local scheduled = pendingScale ~= nil
+        pendingScale = value
+        if scheduled then return end
+        if C_Timer and type(C_Timer.After) == "function" then
+            C_Timer.After(0.1, flushScale)
+        else
+            flushScale()
         end
     end)
 

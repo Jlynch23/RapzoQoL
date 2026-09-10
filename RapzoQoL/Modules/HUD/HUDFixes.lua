@@ -111,10 +111,15 @@ local function syncNativeUnitCastBars()
         end
         if not state.onShowHooked and type(bar.HookScript) == "function" then
             state.onShowHooked = true
-            safeCall(bar.HookScript, bar, "OnShow", function()
+            safeCall(bar.HookScript, bar, "OnShow", function(shownBar)
                 -- Only reconcile while Rapzo V2 is actively owning the visual
                 -- castbar state. Once disabled/restored, this hook becomes inert.
                 if not shouldHideNativeUnitCastBars() then return end
+                -- CastingBarMixin hace SetAlpha(1) antes de Show(): atenuar ya
+                -- evita un frame de parpadeo; el timer solo confirma.
+                if type(shownBar.SetAlpha) == "function" then
+                    safeCall(shownBar.SetAlpha, shownBar, 0)
+                end
                 if C_Timer and type(C_Timer.After) == "function" then
                     C_Timer.After(0, syncNativeUnitCastBars)
                 else
@@ -134,9 +139,6 @@ local function syncNativeUnitCastBars()
 end
 
 HUD.SyncNativeUnitCastBars = syncNativeUnitCastBars
--- Compatibility for any external caller from an earlier alpha. The function
--- now synchronizes instead of hiding unconditionally.
-HUD.HideNativeUnitCastBars = syncNativeUnitCastBars
 
 -- Alphas of the rest/status art Rapzo dims, saved once so disabling the
 -- unit frames restores Blizzard's PlayerFrame without a /reload.

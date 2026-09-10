@@ -39,6 +39,50 @@ function RB:RegisterEventSafe(frame, event)
     return pcall(frame.RegisterEvent, frame, event)
 end
 
+-- UNIT_* solo para las unidades indicadas (player/target/focus): en raid o M+
+-- el evento sin filtro llega por cada unidad visible y se descarta en Lua.
+-- Si el cliente no acepta la firma, cae al registro normal.
+-- RegisterUnitEvent admite dos unidades por frame: a partir de la tercera se
+-- usan frames auxiliares que reenvian al OnEvent del frame principal (se lee en
+-- el momento del evento, asi da igual si SetScript se llama despues).
+function RB:RegisterUnitEventSafe(frame, event, ...)
+    if not frame or type(event) ~= "string" then
+        return false
+    end
+    local count = select("#", ...)
+    if type(frame.RegisterUnitEvent) ~= "function" or count == 0 then
+        return pcall(frame.RegisterEvent, frame, event)
+    end
+
+    local units = { ... }
+    local ok = pcall(frame.RegisterUnitEvent, frame, event, units[1], units[2])
+    if not ok then
+        return pcall(frame.RegisterEvent, frame, event)
+    end
+
+    local index = 3
+    local helperIndex = 1
+    while index <= count do
+        frame.RapzoQoLUnitHelpers = frame.RapzoQoLUnitHelpers or {}
+        local helper = frame.RapzoQoLUnitHelpers[helperIndex]
+        if not helper then
+            helper = CreateFrame("Frame")
+            helper:SetScript("OnEvent", function(_, ...)
+                local handler = frame:GetScript("OnEvent")
+                if type(handler) == "function" then handler(frame, ...) end
+            end)
+            frame.RapzoQoLUnitHelpers[helperIndex] = helper
+        end
+        local okHelper = pcall(helper.RegisterUnitEvent, helper, event, units[index], units[index + 1])
+        if not okHelper then
+            return pcall(frame.RegisterEvent, frame, event)
+        end
+        index = index + 2
+        helperIndex = helperIndex + 1
+    end
+    return true
+end
+
 -- Misma normalizacion que GetNormalizedRealmName(): sin espacios, guiones ni
 -- apostrofes. GetNormalizedRealmName() puede devolver nil antes de PLAYER_LOGIN y
 -- el fallback GetRealmName() ("Quel'Thalas", "Tol Barad") generaba una clave de

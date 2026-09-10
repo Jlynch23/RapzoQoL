@@ -22,14 +22,17 @@ local function safeCall(func, ...)
 end
 
 local function getPlayerSpecID()
-    if type(GetSpecialization) ~= "function" or type(GetSpecializationInfo) ~= "function" then
+    -- 11.1.5+: C_SpecializationInfo; las globales quedan como fallback deprecado.
+    local getSpec = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
+    local getSpecInfo = (C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo) or GetSpecializationInfo
+    if type(getSpec) ~= "function" or type(getSpecInfo) ~= "function" then
         return nil
     end
 
-    local okIndex, index = pcall(GetSpecialization)
+    local okIndex, index = pcall(getSpec)
     if not okIndex or not index or isSecret(index) then return nil end
 
-    local okInfo, specID = pcall(GetSpecializationInfo, index)
+    local okInfo, specID = pcall(getSpecInfo, index)
     if not okInfo or not specID or isSecret(specID) then return nil end
     return tonumber(specID)
 end
@@ -91,7 +94,15 @@ local RESOURCE_DEFS = {
     },
 }
 
-local function getResourceDef()
+-- La definicion solo cambia con clase/spec: se cachea y se invalida en los
+-- eventos de spec/talentos para no consultar UnitClass y la spec por cada tick.
+local resourceDefCache = { valid = false }
+
+local function invalidateResourceDef()
+    resourceDefCache.valid = false
+end
+
+local function computeResourceDef()
     local classFile = getPlayerClassFile()
     if not classFile then return nil end
 
@@ -109,6 +120,20 @@ local function getResourceDef()
         return nil
     end
 
+    return def, classFile
+end
+
+local function getResourceDef()
+    if resourceDefCache.valid then
+        return resourceDefCache.def, resourceDefCache.classFile
+    end
+    local def, classFile = computeResourceDef()
+    -- Sin clase legible (login temprano) no se cachea el nil.
+    if classFile then
+        resourceDefCache.valid = true
+        resourceDefCache.def = def
+        resourceDefCache.classFile = classFile
+    end
     return def, classFile
 end
 
@@ -168,6 +193,7 @@ end
 
 local function layoutPips(frame, count)
     count = math.max(1, math.min(MAX_PIPS, tonumber(count) or 1))
+    if frame.activeCount == count then return end
     local totalGap = RESOURCE_GAP * (count - 1)
     local pipWidth = math.max(4, (RESOURCE_WIDTH - totalGap) / count)
 
@@ -379,28 +405,11 @@ function HUD:UpdateClassResource()
     self:ApplyClassResourceCastAnchor("player", display.RapzoQoLCastBar)
 end
 
-function HUD:GetClassResourceInfo()
-    local def, classFile = getResourceDef()
-    if not def then return nil end
-    return {
-        classFile = classFile,
-        label = def.label,
-        kind = def.kind or "power",
-        power = def.power,
-    }
-end
-
+-- Un solo hook: el recurso se relayouta con el estilo; los valores llegan por
+-- sus propios eventos UNIT_POWER_* (solo player).
 if type(hooksecurefunc) == "function" then
     if type(HUD.ApplyFrameStyle) == "function" then
         hooksecurefunc(HUD, "ApplyFrameStyle", function(_, unit)
-            if unit == nil or unit == "player" then
-                HUD:UpdateClassResource()
-            end
-        end)
-    end
-
-    if type(HUD.UpdateUnitFrames) == "function" then
-        hooksecurefunc(HUD, "UpdateUnitFrames", function(_, unit)
             if unit == nil or unit == "player" then
                 HUD:UpdateClassResource()
             end
@@ -415,14 +424,20 @@ for _, event in ipairs({
     "PLAYER_ENTERING_WORLD",
     "PLAYER_SPECIALIZATION_CHANGED",
     "PLAYER_TALENT_UPDATE",
+    "TRAIT_CONFIG_UPDATED",
     "UPDATE_SHAPESHIFT_FORM",
-    "UNIT_POWER_UPDATE",
-    "UNIT_POWER_FREQUENT",
-    "UNIT_MAXPOWER",
     "RUNE_POWER_UPDATE",
     "PLAYER_REGEN_ENABLED",
 }) do
     pcall(events.RegisterEvent, events, event)
+end
+
+for _, event in ipairs({ "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER" }) do
+    if type(RB.RegisterUnitEventSafe) == "function" then
+        RB:RegisterUnitEventSafe(events, event, "player")
+    else
+        pcall(events.RegisterEvent, events, event)
+    end
 end
 
 events:SetScript("OnEvent", function(_, event, unit)
@@ -430,6 +445,9 @@ events:SetScript("OnEvent", function(_, event, unit)
         if unit ~= "player" then return end
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
         if unit and unit ~= "player" then return end
+        invalidateResourceDef()
+    elseif event == "PLAYER_TALENT_UPDATE" or event == "TRAIT_CONFIG_UPDATED" or event == "PLAYER_ENTERING_WORLD" then
+        invalidateResourceDef()
     end
 
     HUD:UpdateClassResource()

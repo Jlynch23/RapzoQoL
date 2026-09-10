@@ -23,6 +23,8 @@ local COLORS = {
     dark   = { 0.015, 0.020, 0.028 },
     power  = { 0.22, 0.28, 0.38 },
 }
+-- Compartido con HUDStyles para que V1 restaure exactamente los colores base.
+HUD.COLORS = COLORS
 
 local function isSecret(value)
     return type(issecretvalue) == "function" and issecretvalue(value)
@@ -242,8 +244,14 @@ local function hidePlayerStaticArt()
         end
     end
 
+    -- Solo el arte ligado al portrait. Marcador de raid, lider, rol y grupo
+    -- siguen visibles; AttackIcon/CornerIcon/RestLoop los gestiona HUDFixes.
     local contextual = content and content.PlayerFrameContentContextual
-    if contextual then hideNativeRegion(contextual) end
+    if contextual then
+        hideNativeRegion(contextual.PrestigePortrait)
+        hideNativeRegion(contextual.PrestigeBadge)
+        hideNativeRegion(contextual.PVPIcon)
+    end
 end
 
 local function restorePlayerStaticArt()
@@ -271,7 +279,14 @@ local function restorePlayerStaticArt()
         end
     end
 
-    restoreNativeRegion(content and content.PlayerFrameContentContextual)
+    local contextual = content and content.PlayerFrameContentContextual
+    if contextual then
+        restoreNativeRegion(contextual.PrestigePortrait)
+        restoreNativeRegion(contextual.PrestigeBadge)
+        restoreNativeRegion(contextual.PVPIcon)
+        -- Compatibilidad con versiones que ocultaban el contenedor entero.
+        restoreNativeRegion(contextual)
+    end
 end
 
 local function hideTargetStaticArt(frame)
@@ -487,13 +502,21 @@ local function applyDisplayColor(display, color)
     end
 
     -- Style 2 uses neutral/black borders only. The class/reaction color
-    -- belongs to the health fill, never to the frame outline.
+    -- belongs to the health fill, never to the frame outline. Style 1 pinta
+    -- los bordes con el color de la unidad aqui (y no en cada relayout).
     if type(HUD.GetStyle) == "function" and HUD:GetStyle() == 2 then
         for _, edge in ipairs(display.health and display.health.RapzoQoLEdges or {}) do
             edge:SetColorTexture(0.01, 0.01, 0.01, 1)
         end
         for _, edge in ipairs(display.power and display.power.RapzoQoLEdges or {}) do
             edge:SetColorTexture(0.01, 0.01, 0.01, 1)
+        end
+    else
+        for _, edge in ipairs(display.health and display.health.RapzoQoLEdges or {}) do
+            edge:SetColorTexture(color[1], color[2], color[3], 0.60)
+        end
+        for _, edge in ipairs(display.power and display.power.RapzoQoLEdges or {}) do
+            edge:SetColorTexture(COLORS.power[1], COLORS.power[2], COLORS.power[3], 0.60)
         end
     end
 end
@@ -603,7 +626,8 @@ end
 function HUD:CreateUnitDisplays()
     local cfg = getConfig()
     if not self:IsEnabled() or not cfg.unitFrames then return end
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then return end
+    -- Crear frames propios y cambiar alpha de regiones nativas esta permitido en
+    -- combate; sin guard, `/rapzo hud frames on` en combate no deja arte nativo visible.
 
     if _G.PlayerFrame then
         hidePlayerStaticArt()
@@ -711,14 +735,14 @@ function HUD:CreateCursorRing()
         local x, y = GetCursorPosition()
         if not x or not y or not scale or scale == 0 then return end
 
+        -- El tamano solo cambia con /rapzo hud cursorsize: no hay que hacer
+        -- tres SetSize por frame.
         local size = tonumber(cfg.cursorSize) or 52
-        self:SetSize(size, size)
-
-        if self.shadow then
-            self.shadow:SetSize(size + 16, size + 16)
-        end
-        if self.outer then
-            self.outer:SetSize(size, size)
+        if self.appliedSize ~= size then
+            self.appliedSize = size
+            self:SetSize(size, size)
+            if self.shadow then self.shadow:SetSize(size + 16, size + 16) end
+            if self.outer then self.outer:SetSize(size, size) end
         end
 
         self:ClearAllPoints()
@@ -811,11 +835,14 @@ function HUD:SetPart(part, enabled)
     if part == "cursor" then
         cfg.cursor = enabled and true or false
         if not cfg.cursor and self.cursorFrame then self.cursorFrame:Hide() end
+        RB:Print("Aro del mouse: " .. (cfg.cursor and "ON" or "OFF"))
     elseif part == "minimap" then
         cfg.squareMinimap = enabled and true or false
         if not cfg.squareMinimap then
             self:RestoreMinimapArt()
             RB:Print("Minimapa Rapzo: OFF. Bordes y brujula restaurados; la mascara cuadrada necesita /reload.")
+        else
+            RB:Print("Minimapa Rapzo: ON")
         end
     elseif part == "frames" then
         cfg.unitFrames = enabled and true or false
@@ -823,6 +850,8 @@ function HUD:SetPart(part, enabled)
             for _, display in pairs(self.unitDisplays) do display:Hide() end
             restoreNativeUnitArt()
             RB:Print("Unit frames Rapzo OFF; Player/Target/Focus nativos restaurados.")
+        else
+            RB:Print("Unit frames Rapzo: ON")
         end
     else
         return false
@@ -896,7 +925,6 @@ function HUD:HandleSlash(rest)
         end
 
         self:SetPart(part, value == "on")
-        RB:Print(string.format("HUD %s: %s", part, value:upper()))
         return
     end
 
@@ -927,18 +955,26 @@ function HUD:Initialize()
         pcall(events.RegisterEvent, events, event)
     end
 
+    local function registerUnit(event)
+        if type(RB.RegisterUnitEventSafe) == "function" then
+            RB:RegisterUnitEventSafe(events, event, "player", "target", "focus")
+        else
+            register(event)
+        end
+    end
+
     register("ADDON_LOADED")
     register("PLAYER_LOGIN")
     register("PLAYER_ENTERING_WORLD")
     register("PLAYER_REGEN_ENABLED")
     register("PLAYER_TARGET_CHANGED")
     register("PLAYER_FOCUS_CHANGED")
-    register("UNIT_HEALTH")
-    register("UNIT_MAXHEALTH")
-    register("UNIT_POWER_UPDATE")
-    register("UNIT_MAXPOWER")
-    register("UNIT_DISPLAYPOWER")
-    register("UNIT_NAME_UPDATE")
+    registerUnit("UNIT_HEALTH")
+    registerUnit("UNIT_MAXHEALTH")
+    registerUnit("UNIT_POWER_UPDATE")
+    registerUnit("UNIT_MAXPOWER")
+    registerUnit("UNIT_DISPLAYPOWER")
+    registerUnit("UNIT_NAME_UPDATE")
 
     events:SetScript("OnEvent", function(_, event, unit)
         if event == "ADDON_LOADED" then

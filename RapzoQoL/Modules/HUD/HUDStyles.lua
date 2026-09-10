@@ -75,20 +75,30 @@ local function getConfig()
     return cfg
 end
 
+-- Lecturas baratas: HUD.config ya esta validado tras el primer getConfig();
+-- estas funciones se llaman muchas veces por relayout y no deben pasar por
+-- EnsureDB cada vez.
 function HUD:GetStyle()
+    local cfg = HUD.config
+    if cfg and cfg.style then return cfg.style end
     return getConfig().style
 end
 
 function HUD:GetFrameScale()
+    local cfg = HUD.config
+    if cfg and cfg.frameScale then return cfg.frameScale end
     return getConfig().frameScale
 end
 
 function HUD:GetAuraScale()
+    local cfg = HUD.config
+    if cfg and cfg.auraScale then return cfg.auraScale end
     return getConfig().auraScale
 end
 
 function HUD:GetAuraOffset()
-    local cfg = getConfig()
+    local cfg = HUD.config
+    if not (cfg and cfg.auraOffsetX and cfg.auraOffsetY) then cfg = getConfig() end
     return cfg.auraOffsetX, cfg.auraOffsetY
 end
 
@@ -258,19 +268,28 @@ local function updateCastBar(unit)
         return
     end
 
+    -- En contenido restringido el nombre del cast puede ser secreto: se decide
+    -- "hay cast" sin compararlo (un secreto cuenta como cast presente) y el
+    -- texto se entrega tal cual a SetText, que si acepta secretos.
     local name
+    local casting = false
     local isChannel = false
 
     if type(UnitCastingInfo) == "function" then
-        name = UnitCastingInfo(unit)
+        local ok, value = pcall(UnitCastingInfo, unit)
+        if ok and (isSecret(value) or value ~= nil) then
+            name, casting = value, true
+        end
     end
 
-    if name == nil and type(UnitChannelInfo) == "function" then
-        name = UnitChannelInfo(unit)
-        if name ~= nil then isChannel = true end
+    if not casting and type(UnitChannelInfo) == "function" then
+        local ok, value = pcall(UnitChannelInfo, unit)
+        if ok and (isSecret(value) or value ~= nil) then
+            name, casting, isChannel = value, true, true
+        end
     end
 
-    if name == nil then
+    if not casting then
         bar:Hide()
         return
     end
@@ -285,12 +304,15 @@ local function updateCastBar(unit)
 
     local duration
     if isChannel and type(UnitChannelDuration) == "function" then
-        duration = UnitChannelDuration(unit)
+        local ok, value = pcall(UnitChannelDuration, unit)
+        if ok then duration = value end
     elseif type(UnitCastingDuration) == "function" then
-        duration = UnitCastingDuration(unit)
+        local ok, value = pcall(UnitCastingDuration, unit)
+        if ok then duration = value end
     end
 
-    if duration and type(bar.SetTimerDuration) == "function" then
+    -- SetTimerDuration consume duraciones secretas directamente.
+    if (isSecret(duration) or duration ~= nil) and type(bar.SetTimerDuration) == "function" then
         if isChannel and Enum and Enum.StatusBarFillDirection and Enum.StatusBarFillDirection.Reverse then
             safeCall(bar.SetTimerDuration, bar, duration, Enum.StatusBarFillDirection.Reverse)
         else
@@ -569,8 +591,56 @@ local function setToxiDecorVisible(display, visible)
     if decor.lowerShade then decor.lowerShade:SetShown(visible) end
 end
 
+-- Snapshot de fuentes/sombras/colores antes de la primera tipografia Toxi, para
+-- que V2 -> V1 vuelva exactamente a lo creado por HUD.lua sin /reload.
+local TYPOGRAPHY_KEYS = { "nameText", "healthPercentText", "healthValueText", "powerValueText", "levelText" }
+
+local function captureTypography(display)
+    if not display or display.RapzoQoLTypographySnapshot then return end
+    local snapshot = {}
+    for _, key in ipairs(TYPOGRAPHY_KEYS) do
+        local text = display[key]
+        if text then
+            local entry = {}
+            if type(text.GetFont) == "function" then
+                local ok, path, size, flags = pcall(text.GetFont, text)
+                if ok and path then entry.font = { path, size, flags } end
+            end
+            if type(text.GetShadowOffset) == "function" then
+                local ok, x, y = pcall(text.GetShadowOffset, text)
+                if ok then entry.shadowOffset = { x or 0, y or 0 } end
+            end
+            if type(text.GetShadowColor) == "function" then
+                local ok, r, g, b, a = pcall(text.GetShadowColor, text)
+                if ok then entry.shadowColor = { r or 0, g or 0, b or 0, a or 0 } end
+            end
+            if type(text.GetTextColor) == "function" then
+                local ok, r, g, b, a = pcall(text.GetTextColor, text)
+                if ok then entry.textColor = { r or 1, g or 1, b or 1, a or 1 } end
+            end
+            snapshot[key] = entry
+        end
+    end
+    display.RapzoQoLTypographySnapshot = snapshot
+end
+
+local function restoreTypography(display)
+    local snapshot = display and display.RapzoQoLTypographySnapshot
+    if not snapshot then return end
+    for key, entry in pairs(snapshot) do
+        local text = display[key]
+        if text then
+            if entry.font then pcall(text.SetFont, text, entry.font[1], entry.font[2], entry.font[3]) end
+            if entry.shadowOffset then pcall(text.SetShadowOffset, text, entry.shadowOffset[1], entry.shadowOffset[2]) end
+            if entry.shadowColor then pcall(text.SetShadowColor, text, entry.shadowColor[1], entry.shadowColor[2], entry.shadowColor[3], entry.shadowColor[4]) end
+            if entry.textColor then pcall(text.SetTextColor, text, entry.textColor[1], entry.textColor[2], entry.textColor[3], entry.textColor[4]) end
+        end
+    end
+end
+
 local function applyToxiTypography(display)
     if not display then return end
+    captureTypography(display)
     local fontPath = STANDARD_TEXT_FONT
 
     if display.nameText then
@@ -607,7 +677,16 @@ local function applyStyle1(display)
     setShellVisible(display, true)
     display:SetSize(240, 64)
 
+    -- Todo lo que V2 toca se devuelve aqui: tipografia, alto del nombre, color
+    -- y fondo de las barras. Asi V1 -> V2 -> V1 no necesita /reload.
+    restoreTypography(display)
+    local colors = HUD.COLORS or {}
+    local dark = colors.dark or { 0.015, 0.020, 0.028 }
+    local powerColor = colors.power or { 0.22, 0.28, 0.38 }
+
     display.nameText:ClearAllPoints()
+    display.nameText:SetHeight(14)
+    display.nameText:SetJustifyH("LEFT")
     display.nameText:SetPoint("TOPLEFT", display, "TOPLEFT", 6, -8)
     display.nameText:SetPoint("RIGHT", display, "RIGHT", -6, 0)
 
@@ -620,20 +699,26 @@ local function applyStyle1(display)
     display.power:SetHeight(10)
     display.power:SetPoint("TOPLEFT", display.health, "BOTTOMLEFT", 0, -4)
     display.power:SetPoint("RIGHT", display.health, "RIGHT", 0, 0)
+    display.power:SetStatusBarColor(powerColor[1], powerColor[2], powerColor[3])
+    if display.health.RapzoQoLBackground then
+        display.health.RapzoQoLBackground:SetColorTexture(dark[1], dark[2], dark[3], 0.96)
+    end
+    if display.power.RapzoQoLBackground then
+        display.power.RapzoQoLBackground:SetColorTexture(dark[1], dark[2], dark[3], 0.96)
+    end
 
     if display.unitTag then display.unitTag:Show() end
     if display.levelText then display.levelText:Hide() end
     if display.healthPercentText then display.healthPercentText:Hide() end
     if display.healthValueText then display.healthValueText:Hide() end
     if display.powerValueText then display.powerValueText:Hide() end
-    if display.RapzoQoLUnitIcon then display.RapzoQoLUnitIcon:Hide() end
     if display.RapzoQoLCastBar then display.RapzoQoLCastBar:Hide() end
     setToxiDecorVisible(display, false)
 
     if display.color then
         setEdgesColor(display.health and display.health.RapzoQoLEdges, display.color[1], display.color[2], display.color[3], 0.60)
     end
-    setEdgesColor(display.power and display.power.RapzoQoLEdges, 0.22, 0.28, 0.38, 0.60)
+    setEdgesColor(display.power and display.power.RapzoQoLEdges, powerColor[1], powerColor[2], powerColor[3], 0.60)
 
     setPlayerAurasEnabled(display, false)
     setTargetAurasEnabled(display, false)
@@ -677,10 +762,6 @@ local function applyStyle2(display)
     if display.healthPercentText then display.healthPercentText:Hide() end
     if display.healthValueText then display.healthValueText:Show() end
     if display.powerValueText then display.powerValueText:Show() end
-
-    if display.RapzoQoLUnitIcon then
-        display.RapzoQoLUnitIcon:Hide()
-    end
 
     ensureToxiDecor(display)
     setToxiDecorVisible(display, true)
@@ -779,16 +860,13 @@ function HUD:SetStyle(style)
     return true
 end
 
+-- Estilo y valores van separados: UpdateUnitFrames (cada UNIT_HEALTH/POWER)
+-- solo escribe valores; el estilo se aplica al crear displays, al cambiar
+-- estilo/escala, al cambiar target/focus y al salir de combate.
 if type(hooksecurefunc) == "function" then
     if type(HUD.CreateUnitDisplays) == "function" then
         hooksecurefunc(HUD, "CreateUnitDisplays", function()
             HUD:ApplyFrameStyle()
-        end)
-    end
-
-    if type(HUD.UpdateUnitFrames) == "function" then
-        hooksecurefunc(HUD, "UpdateUnitFrames", function(_, unit)
-            HUD:ApplyFrameStyle(unit)
         end)
     end
 end
@@ -801,6 +879,11 @@ for _, event in ipairs({
     "PLAYER_REGEN_ENABLED",
     "PLAYER_TARGET_CHANGED",
     "PLAYER_FOCUS_CHANGED",
+}) do
+    pcall(castEvents.RegisterEvent, castEvents, event)
+end
+
+for _, event in ipairs({
     "UNIT_SPELLCAST_START",
     "UNIT_SPELLCAST_STOP",
     "UNIT_SPELLCAST_FAILED",
@@ -812,7 +895,11 @@ for _, event in ipairs({
     "UNIT_SPELLCAST_EMPOWER_START",
     "UNIT_SPELLCAST_EMPOWER_STOP",
 }) do
-    pcall(castEvents.RegisterEvent, castEvents, event)
+    if type(RB.RegisterUnitEventSafe) == "function" then
+        RB:RegisterUnitEventSafe(castEvents, event, "player", "target", "focus")
+    else
+        pcall(castEvents.RegisterEvent, castEvents, event)
+    end
 end
 
 castEvents:SetScript("OnEvent", function(_, event, unit)

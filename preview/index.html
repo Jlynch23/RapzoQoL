@@ -140,35 +140,32 @@
   }
   .cast .fill{width:62%;background:linear-gradient(90deg,#ba7b13,#f5bc37)}
   .cast span{position:absolute;inset:0;display:grid;place-items:center;font-size:9px;font-weight:700}
+  /* Estilo 2: misma geometria que HUDStyles.lua (150x43 base, escala 1.50,
+     health 21 px en y=-11, power 9 px, nombre 10 px, auras 16 px a +18,
+     recurso 6 px a -2 con gap 3, castbar 10 px a -4). */
   body.style2 .frame{
-    width:296px;height:72px;
+    width:150px;height:43px;
+    transform:scale(1.5);transform-origin:top left;
     background:transparent;
     border-color:transparent;
     box-shadow:none;
   }
   body.style2 .frame:before{display:none}
-  body.style2 .name{left:4px;right:4px}
-  body.style2 .health{left:4px;top:25px;right:4px}
-  body.style2 .power{left:4px;top:52px;right:4px}
+  body.style2 .name{left:1px;right:28px;top:0;height:10px;font-size:9px;line-height:10px;text-shadow:1px -1px 0 #000}
+  body.style2 .health{left:0;right:0;top:11px;height:21px;border-color:#030303}
+  body.style2 .power{left:0;right:0;top:33px;height:9px;border-color:#030303}
+  body.style2 .power .fill{background:#1c2430}
+  body.style2 .bartext{font-size:8px}
+  body.style2 .power .bartext{font-size:8px}
   body.style2 .tag{display:none}
-  body.style2 .auras{left:4px;bottom:calc(100% + 6px);gap:5px}
-
-  body.style2 .target .name,
-  body.style2 .focus .name{left:4px;right:4px}
-
-  body.style2 .target .health,
-  body.style2 .focus .health{left:4px;right:4px}
-
-  body.style2 .target .power,
-  body.style2 .focus .power{left:4px;right:4px}
-
-  body.style2 .target .auras,
-  body.style2 .focus .auras{left:4px;right:4px}
-
-  body.style2 .target .cast,
-  body.style2 .focus .cast{left:4px;right:4px}
+  body.style2 .auras{left:0;bottom:calc(100% + 24px);height:16px;gap:5px}
+  body.style2 .aura{width:16px;height:16px}
+  body.style2 .aura:after{top:17px;font-size:7px}
+  body.style2 .secondary{left:0;right:0;top:calc(100% + 2px);height:6px;gap:3px}
   body.style2 .secondary.has-resource{display:flex}
-  body.style2 .frame.has-secondary .cast{top:calc(100% + 17px)}
+  body.style2 .cast{left:0;right:0;top:calc(100% + 4px);height:10px;border-color:#030303}
+  body.style2 .cast span{font-size:8px}
+  body.style2 .frame.has-secondary .cast{top:calc(100% + 11px)}
   body.style2 .cast{display:block}
   body.style1 .player-pos .auras{display:none}
   body.style1 .cast{display:none}
@@ -232,16 +229,16 @@
   <div class="stage">
     <div class="guide">
       <strong>Objetivo de Estilo 2</strong>
-      <p>Spec final: sin iconos; auras 20×20; barras 288 px; recursos 8 px; castbar 14 px.</p>
+      <p>Spec V2: sin iconos; base 150x43 a escala 1.50 (~225x65 px); auras 16x16; recurso 6 px; castbar 10 px.</p>
     </div>
 
     <div class="spec">
       <h3>Comparación rápida</h3>
       <ul>
         <li>Estilo 1 nunca se elimina.</li>
-        <li>Estilo 2 usa un contenedor invisible de 296×72.</li>
+        <li>Estilo 2 usa un contenedor invisible de 150x43 escalado x1.50 (~225x65).</li>
         <li>Sin fondo, borde ni linea exterior.</li>
-        <li>Player: buffs cortos de combate, 20×20, maximo 5.</li>
+        <li>Player: buffs cortos de combate, 16x16, maximo 5.</li>
         <li>Target/Focus: solo debuffs tuyos (HARMFUL|PLAYER), maximo 5.</li>
         <li>Castbar inferior independiente.</li>
       </ul>
