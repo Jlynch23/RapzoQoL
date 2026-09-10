@@ -623,6 +623,15 @@ castbars y contenedores de auras modificados por Rapzo. Los hooks instalados deb
 El minimapa restaura bordes y brujula al apagarlo, pero la mascara cuadrada necesita `/reload` para
 volver completamente a la forma nativa.
 
+Botones de addons en el minimapa (desde 2026-09-10): con el minimapa cuadrado activo, `HUD.lua`
+define la global `GetMinimapShape()` devolviendo `"SQUARE"`; LibDBIcon (y cualquier addon que la
+consulte) coloca los botones sobre el borde cuadrado en vez de orbitar un circulo. Al apagar se
+devuelve la funcion anterior (de otro addon o nil). Tras cada cambio y 3 s despues de entrar al
+mundo se llama `LibDBIcon:SetButtonRadius(radius)` para recolocar los botones ya registrados.
+LibStub/LibDBIcon solo se usan si otro addon los carga; sin ellos no hay nada que recolocar.
+Botones que no usan LibDBIcon (se anclan a mano) quedan fuera; si alguno molesta, tratarlo como
+caso puntual.
+
 ### 9.2 Unit Frames y colores
 
 Los displays Rapzo son frames propios anclados a los frames Blizzard; no sustituyen la unidad

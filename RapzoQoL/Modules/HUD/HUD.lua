@@ -754,6 +754,55 @@ function HUD:CreateCursorRing()
     return frame
 end
 
+-- Forma del minimapa para los botones de addons. LibDBIcon (y otros addons)
+-- llaman a la global GetMinimapShape() al colocar cada boton; sin ella asumen
+-- ROUND y los botones orbitan un circulo aunque el minimapa sea cuadrado.
+-- Se define solo mientras el minimapa cuadrado esta activo y se devuelve la
+-- funcion anterior (de otro addon o nil) al apagarlo.
+local function squareMinimapShape()
+    return "SQUARE"
+end
+local previousMinimapShape
+local minimapShapeOwned = false
+
+local function getLibDBIcon()
+    if type(_G.LibStub) ~= "function" then return nil end
+    local ok, lib = pcall(_G.LibStub, "LibDBIcon-1.0", true)
+    if ok and type(lib) == "table" then return lib end
+    return nil
+end
+
+-- SetButtonRadius recoloca todos los botones registrados con la forma actual.
+local function refreshMinimapButtons()
+    local lib = getLibDBIcon()
+    if not lib or type(lib.SetButtonRadius) ~= "function" then return end
+    local radius = tonumber(lib.radius) or 5
+    safeCall(lib.SetButtonRadius, lib, radius)
+end
+
+local function applyMinimapShape(square)
+    if square then
+        if _G.GetMinimapShape ~= squareMinimapShape then
+            previousMinimapShape = _G.GetMinimapShape
+            _G.GetMinimapShape = squareMinimapShape
+            minimapShapeOwned = true
+        end
+    elseif minimapShapeOwned then
+        if _G.GetMinimapShape == squareMinimapShape then
+            _G.GetMinimapShape = previousMinimapShape
+        end
+        minimapShapeOwned = false
+        previousMinimapShape = nil
+    else
+        return
+    end
+    refreshMinimapButtons()
+end
+
+function HUD:RefreshMinimapButtons()
+    refreshMinimapButtons()
+end
+
 function HUD:StyleMinimap()
     local cfg = getConfig()
     if not _G.Minimap then return end
@@ -763,6 +812,7 @@ function HUD:StyleMinimap()
     end
 
     safeCall(_G.Minimap.SetMaskTexture, _G.Minimap, WHITE_TEXTURE)
+    applyMinimapShape(true)
 
     -- Rapzo QoL keeps the minimap square but completely borderless. The
     -- original alphas are snapshotted so the toggle restores the native art
@@ -777,6 +827,7 @@ function HUD:StyleMinimap()
 end
 
 function HUD:RestoreMinimapArt()
+    applyMinimapShape(false)
     restoreNativeRegion(_G.MinimapCompassTexture)
     if _G.MinimapBackdrop then
         restoreNativeRegion(_G.MinimapBackdrop.StaticOverlayTexture)
@@ -1032,6 +1083,14 @@ function HUD:Initialize()
         HUD:ScheduleApply(event == "PLAYER_ENTERING_WORLD" and 0.5 or 0.05)
         if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
             HUD:ScheduleApply(2.0)
+            -- Los addons que registran botones despues de nosotros ya ven la
+            -- forma cuadrada; los que lo hicieron antes se recolocan aqui.
+            if C_Timer and C_Timer.After then
+                C_Timer.After(3.0, function()
+                    local current = HUD.config or getConfig()
+                    if current.squareMinimap then refreshMinimapButtons() end
+                end)
+            end
         end
     end)
 
