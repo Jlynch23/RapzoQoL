@@ -1,6 +1,6 @@
 ## Interface: 120100
 ## Title: Rapzo QoL
-## Notes: Suite QoL de Rapzo: inventario, tooltip, busqueda, colecciones, vendedor, AFK y HUD.
+## Notes: Suite QoL de Rapzo: inventario, tooltip, busqueda, colecciones, vendedor, AFK, Cooldown Pulse y HUD.
 ## Author: Rapzo
 ## Version: 3.0.0-alpha5
 ## SavedVariables: RapzoBagsDB
@@ -18,6 +18,7 @@ Modules\QoL\ExpansionFilters.lua
 Modules\AFK\AFK.lua
 Modules\AFK\AFKBrand.lua
 Modules\ReflectHerald\ReflectHerald.lua
+Modules\CooldownPulse\CooldownPulse.lua
 Modules\HUD\HUD.lua
 Modules\HUD\HUDFixes.lua
 Modules\HUD\HUDStyles.lua
