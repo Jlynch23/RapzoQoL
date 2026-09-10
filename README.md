@@ -18,7 +18,9 @@ Internal modules:
 - HUD — cursor ring, square minimap and minimalist Player/Target/Focus visuals.
 - QoL — "current expansion only" filter preset for the Auction House and customer Crafting Orders searches.
 - ReflectHerald — announces the spell you bounced back with Spell Reflection.
-- Config — runtime module controls.
+- CooldownPulse — Midnight-safe "cooldown ready" alert (icon + name), learns real cooldown lengths.
+- CombatText — fonts, scale, gravity and duration of Blizzard's combat text (off by default).
+- Config — runtime module controls, including toggles for every module.
 
 ## Installation
 
@@ -41,6 +43,8 @@ The legacy `RapzoBags_*` folders are no longer separate addons.
 - `/rapzo hud preview on|off`
 - `/rapzo expfilter on|off` — "current expansion only" preset in AH/Crafting Orders searches.
 - `/rapzo reflect [status|on|off|party|test|stats]` — Spell Reflection announcer (short alias: `/rh`).
+- `/rapzo pulse [status|on|off|scan|test|list|ignore|enable|min|size|move]` — cooldown-ready alert.
+- `/rapzo damage [status|on|off|font|scale|gravity|duration|restore]` — combat text customization.
 
 Legacy aliases `/rbags` and `/rapzobags` remain available, and `/rqol` is a short alias for `/rapzo`. The addon also registers `/rl` as a quick `/reload` shortcut (another addon registering `/rl` may take precedence depending on load order).
 

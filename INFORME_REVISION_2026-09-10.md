@@ -1,8 +1,14 @@
 # Rapzo QoL - Informe de revision completa (2026-09-10)
 
+> **Estado (misma fecha, por la tarde):** los fixes se aplicaron en tres commits de la rama
+> `claude/addon-review-complete-k37k2z` (`a91b68e` sesion 1, `f2b5555` sesion 2, `7c1be20`
+> sesion 3). La seccion 7 al final dice que quedo resuelto, que se dejo fuera y por que, y que
+> hay que validar en juego. Nada se probo dentro de WoW: solo con un arnes de stubs (Lua 5.1)
+> que carga el addon en el orden del TOC, dispara los eventos de login y ejecuta los comandos.
+
 Revision estatica de todo el addon (19 archivos Lua, TOC, preview HTML, workflow y docs) sobre el
-commit `44c985c` (`Fix Cooldown Pulse spell detection on WoW 12.1`). No se modifico codigo: este
-documento es la lista de trabajo para la siguiente sesion. Cada hallazgo lleva archivo:linea,
+commit `44c985c` (`Fix Cooldown Pulse spell detection on WoW 12.1`). En el momento de escribirlo
+no se habia modificado codigo: era la lista de trabajo para la siguiente sesion. Cada hallazgo lleva archivo:linea,
 severidad, que pasa y como arreglarlo. Las rutas son relativas a `RapzoQoL/`.
 
 Severidades:
@@ -721,5 +727,51 @@ Comandos utiles: `/dump GetCVar("WorldTextGravity")`, `/dump C_CVar.GetCVarInfo(
   `BankDocumentation.lua`, `TransmogDocumentation.lua`, `ItemConstantsDocumentation.lua`.
 - No se ejecuto nada dentro de WoW; no existe suite automatizada. Todo lo marcado como DUDA queda
   para la validacion en juego de Rapzo.
-- Este informe vive en la rama `claude/addon-review-complete-k37k2z`. Cuando se apliquen los fixes,
-  actualizar CLAUDE.md (secciones 5, 6, 7, 10, 11, 12) y borrar de aqui lo resuelto.
+- Este informe vive en la rama `claude/addon-review-complete-k37k2z`. CLAUDE.md ya se actualizo
+  (secciones 5, 6, 7, 8.11, 8.12, 9, 10, 11, 12).
+
+---
+
+## 7. Estado de los hallazgos tras aplicar los fixes
+
+### Resueltos (commit entre parentesis)
+
+- Core: C-1 (clave normalizada + `RB:MigrateCharacterKeys`), C-2, C-3, C-4, C-5 (reset recarga
+  la UI), C-7 (`a91b68e`). C-6 y C-8 documentados, sin cambio.
+- Scanner: S-1, S-2, S-3, S-4, S-5 (`a91b68e`). S-6 documentado.
+- Search: SE-2, SE-3, SE-4 (`a91b68e`). SE-1 (coste por busqueda) pendiente: requiere
+  reestructurar `GetMatches`; no bloquea nada.
+- Collections: CO-1, CO-2, CO-3, CO-4 (`a91b68e`).
+- Vendor: V-1, V-2, V-3, V-4, V-5, V-6, V-7, V-9, V-10 parcial (`a91b68e`). V-8 (`showOwnedCount`
+  sin comando) pendiente, trivial.
+- ExpansionFilters: E-1, E-3 pendientes (pulido); E-2 es duda de juego.
+- AFK: A-1, A-2 (AFKBrand.lua borrado), A-3 (`a91b68e`).
+- ReflectHerald: R-1 (`a91b68e`); R-2 duda de juego.
+- Cooldown Pulse: P-1, P-3, P-4, P-5, P-6, P-7 (`f2b5555`). P-2: se guarda la ULTIMA duracion
+  medida (no el maximo); el cierre por GCD se mantiene a proposito (ver nota en CLAUDE.md 8.11);
+  las cargas siguen sin tratarse por separado (`GetSpellCharges` puede ser secreto en combate).
+- Combat Text: CT-1, CT-2, CT-3, CT-4 (panel compacto), CT-5 documentado (`f2b5555`).
+- HUD: H-1, H-2, H-3, H-4, H-5, H-6, H-7, H-8, H-10, H-11, H-12, H-13, H-14 y parte de H-15
+  (RapzoQoLUnitIcon, HideNativeUnitCastBars, GetClassResourceInfo, GetSpellTexture) (`7c1be20`).
+  H-9 (mascara del minimapa) pendiente: no se puede verificar offline que textura restaura la
+  forma redonda; sigue necesitando `/reload`. El resto de H-15 (helpers duplicados, despachador
+  unico de eventos) queda como refactor opcional.
+- Config: CF-1 (`a91b68e`). CF-2, CF-3, CF-4 pendientes (pulido).
+- Tooltip: T-1..T-4 pendientes (pulido/duda).
+- Docs: D-1 y D-3 resueltos; D-2 (AGENTS.md) marcado como historico.
+
+### Validar en juego (en este orden)
+
+1. Vendedor con mas de 12 objetos: la fila 3 de la grilla 4x5 debe estar completa. Filtro
+   "No obtenidos" y comprar con el filtro activo. Compra <-> Recompra varias veces. Apagar Vendor
+   y comprobar que el tooltip nativo vuelve sin `/reload`.
+2. Una decoracion de housing ya comprada debe salir OBTENIDO (en verde, sin el check).
+3. `/rapzo gold`: un solo Rapzo por reino. Si habia fantasma, la migracion lo fusiona al login.
+4. Abrir el banco, mover un objeto y cerrar inmediatamente: el tooltip sigue mostrando el banco.
+5. `/rapzo hud style 2` -> `style 1`: fuentes, alto del nombre y color del power de V1 intactos.
+   Target/Focus con casts, auras y combate; Edit Mode; con mUI.
+6. Cooldown Pulse: usar un CD largo, cruzar una pantalla de carga y comprobar que avisa al
+   terminar. `/rapzo pulse list` con la duracion aprendida.
+7. `/rapzo damage status`: cuantos CVars/objetos de fuente existen realmente. Activar, cambiar
+   escala, desactivar: el texto de mundo debe volver al tamano de Blizzard.
+8. Ambos paneles de Config: los diez modulos en el estado y los cuatro checkboxes nuevos.

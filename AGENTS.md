@@ -1,5 +1,9 @@
 # Rapzo QoL — Project Rules
 
+> Documento historico. Las reglas vigentes (rama unica `main`, flujo de trabajo, arquitectura)
+> estan en `CLAUDE.md`, que manda sobre este archivo cuando difieren (por ejemplo la regla 7 sobre
+> `feature/afk-screen-alpha5`, que ya no aplica).
+
 > Before changing Rapzo QoL, read `CODEX_HANDOFF.md` for the current architecture, feature inventory, HUD state, recent commits, testing checklist, and continuity notes.
 
 ## Code ownership and execution

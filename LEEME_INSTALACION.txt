@@ -17,6 +17,9 @@ Subcarpetas internas:
 - Modules\AFK
 - Modules\HUD
 - Modules\QoL
+- Modules\ReflectHerald
+- Modules\CooldownPulse
+- Modules\CombatText
 - Config
 - Media
 
@@ -36,6 +39,9 @@ COMANDOS
 /rapzo afk preview
 /rapzo hud status
 /rapzo expfilter on|off
+/rapzo reflect status
+/rapzo pulse
+/rapzo damage
 
 Los alias antiguos /rbags y /rapzobags siguen funcionando, y /rqol es un
 alias corto de /rapzo. Ademas, /rl recarga la interfaz (equivale a /reload).

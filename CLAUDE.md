@@ -8,7 +8,7 @@
 - Repositorio actual: `https://github.com/Jlynch23/RapzoQoL`
 - Nombre anterior del repositorio: `Jlynch23/RapzoBags` (GitHub redirige al nombre nuevo).
 - Rama unica de trabajo: `main`
-- Fecha del snapshot: 2026-09-03
+- Fecha del snapshot: 2026-09-10
 - Version declarada por el addon: `3.0.0-alpha5`
 - Ultimo tag publicado visible: `v3.0.0-alpha3`
 - WoW Retail Interface: `120100` (Retail 12.1.0)
@@ -112,8 +112,9 @@ Modules/Collections/Collections.lua
 Modules/Vendor/Vendor.lua
 Modules/QoL/ExpansionFilters.lua
 Modules/AFK/AFK.lua
-Modules/AFK/AFKBrand.lua
 Modules/ReflectHerald/ReflectHerald.lua
+Modules/CooldownPulse/CooldownPulse.lua
+Modules/CombatText/CombatText.lua
 
 Modules/HUD/HUD.lua
 Modules/HUD/HUDFixes.lua
@@ -163,7 +164,10 @@ Funciones centrales que usan otros modulos:
 - `RB:SetFeatureEnabled(key, enabled, quiet)`
 - `RB:RegisterCommand(name, handler, helpText)`
 - `RB:RegisterEventSafe(frame, event)`
-- `RB:Print(message)`
+- `RB:RegisterUnitEventSafe(frame, event, unit1, unit2, ...)` — `RegisterUnitEvent` con frames
+  auxiliares a partir de la tercera unidad y fallback a `RegisterEvent`
+- `RB:Print(message)` (seguro con valores secretos)
+- `RB.moduleKeys` — lista canonica de modulos con toggle; Config y `/rapzo modules` la comparten
 - `RB:GetItemAggregate(itemID)`
 - `RB:GetKnownItemLink(itemID)`
 - `RB:GetAllKnownItemIDs()`
@@ -180,9 +184,14 @@ collections
 expansionFilters
 afk
 reflectHerald
+cooldownPulse
+combatText
 hud
 config
 ```
+
+Defaults de `settings.modules`: todos ON salvo `combatText` (OFF, para no pelear con NiceDamage o
+ElvUI si siguen instalados).
 
 `IsModulePresent` significa que el archivo cargo. `IsFeatureEnabled` significa que la funcion esta
 activada. No confundas ambos estados.
@@ -217,8 +226,18 @@ RapzoBagsDB
     ├── vendor
     ├── afk
     ├── hud
-    └── reflectHerald
+    ├── reflectHerald   (party, cleuBlocked, lastBlockedFunction)
+    ├── cooldownPulse   (minCooldown, iconSize, onlyCombat, showName, sound, x, y,
+    │                    ignored[key], learned["Nombre-Reino"][key] = segundos)
+    └── combatText      (worldEnabled, worldFont, worldFontPath, worldScale, worldGravity,
+                         worldDuration, uiEnabled, uiFont, uiFontPath, uiSize, uiOutline,
+                         uiMonochrome, uiShadowOffset, pristine[cvar] = valor Blizzard)
 ```
+
+Clave de personaje: `Nombre-Reino` con el reino SIEMPRE normalizado (sin espacios, guiones ni
+apostrofes, igual que `GetNormalizedRealmName()`). `RB:MigrateCharacterKeys()` fusiona una vez por
+sesion las claves antiguas con espacios/apostrofes ("Rapzo-Quel'Thalas") en la canonica
+("Rapzo-QuelThalas"); no se toca `characters` en `ADDON_LOADED`, solo desde `PLAYER_LOGIN`.
 
 Regla de migracion: completar campos faltantes solo cuando sean `nil`. Nunca reemplazar de golpe
 `db.settings`, `db.characters` ni un bloque de configuracion ya existente. Si cambia el formato de
@@ -364,7 +383,9 @@ Solo tiene control por slash command; actualmente no tiene checkbox propio en Co
 Al apagarlo se detiene la reaplicacion futura; el codigo no fuerza a desmarcar de inmediato un
 checkbox ya activo en una ventana abierta.
 
-### 8.8 AFK — `Modules/AFK/AFK.lua` y `AFKBrand.lua`
+### 8.8 AFK — `Modules/AFK/AFK.lua`
+
+(`AFKBrand.lua` se elimino el 2026-09-10: era un no-op; la marca ya vive en `AFK.lua`.)
 
 Pantalla fullscreen con tarjeta central 880x560. Puede mostrar:
 
@@ -486,6 +507,57 @@ Cada fase se valida en juego antes de pasar a la siguiente; no adelantar fases s
 Nota (2-sep): con el CLEU bloqueado en el cliente actual, las fases 2-4 dependen de que Blizzard
 reabra el evento o de encontrar la via alternativa de la fase 5, que sube de prioridad.
 
+Desde el 2026-09-10 el modulo expone `ReflectHerald:SetEnabled(enabled)` (lo usan los checkboxes
+de Config), la ventana de atribucion de bloqueos es de 1.5 s y guarda la funcion bloqueada en
+`settings.reflectHerald.lastBlockedFunction` para afinar con el proximo taint.log.
+
+### 8.11 Cooldown Pulse — `Modules/CooldownPulse/CooldownPulse.lua`
+
+Aviso visual (icono + "LISTO" + nombre) cuando un poder vuelve a estar disponible. Disenado para
+Midnight: NO depende de los numeros del cooldown (pueden ser secretos); observa
+`SpellCooldownInfo.isActive/isOnGCD` de `C_Spell.GetSpellCooldown` y mide con `GetTime()` cuanto
+duro el cooldown real. Si el cliente no expone `isActive`, cae a la duracion legible (>0 activo,
+<=1.5 s = GCD).
+
+- Catalogo: `C_SpellBook` con las lineas de clase/spec (fallback: todas las lineas) y la pestana
+  General solo para poderes con cooldown base >= 20 s (raciales). Se reconstruye en
+  `PLAYER_LOGIN`, `PLAYER_ENTERING_WORLD`, `SPELLS_CHANGED`, `TRAIT_CONFIG_UPDATED`,
+  `PLAYER_SPECIALIZATION_CHANGED`; los estados en curso se conservan y se reconcilian al instante
+  (un reescaneo nunca pierde el aviso de un cooldown que ya corria).
+- Poll cada 0.25 s mas lectura inmediata en `SPELL_UPDATE_COOLDOWN`; settings y estado ON/OFF
+  cacheados (nada de `EnsureDB` por frame).
+- Aviso si la duracion medida (o la ultima aprendida) >= `minCooldown` (default 8 s, rango 2..120).
+  Se guarda la ULTIMA duracion medida por poder y personaje en `learned`.
+- Nota GCD: si al cooldown le queda menos de un GCD y se lanza otro hechizo, el API lo reporta
+  como GCD y el pulso sale hasta ~1 s antes; se acepta (esperar a `not active` retrasaria el aviso
+  indefinidamente al encadenar casts).
+- Visual: `RapzoQoLCooldownPulseAnchor` (holder sin escala, se arrastra en modo mover) con el
+  hijo `RapzoQoLCooldownPulseFrame` que hace la animacion de escala/alpha (~1 s). Icono 96 px
+  (56..180), posicion default (0, 145) respecto al centro, color de borde = Accent Color.
+- Panel propio como subcategoria Blizzard "Cooldown Pulse" bajo Rapzo QoL (lista de poderes con
+  checkbox por poder, minimo, tamano, probar, mover, reescanear) y checkbox global en Config.
+
+Solo ASCII en textos del panel. Comandos en la seccion 10.
+
+### 8.12 Combat Text — `Modules/CombatText/CombatText.lua`
+
+NO dibuja numeros propios ni toca el combat log: personaliza el texto de combate de Blizzard.
+
+- Dano/heal 3D sobre unidades: `DAMAGE_TEXT_FONT` (fuente; se asigna ya en `ADDON_LOADED` y de
+  nuevo en `PLAYER_LOGIN`; cambiarla requiere salir a seleccion de personaje) y los CVars
+  `WorldTextScale`, `WorldTextGravity`, `WorldTextRampDuration` (y variantes `_v2`) SOLO si
+  existen en el cliente (`C_CVar.GetCVarInfo`).
+- Scrolling Combat Text: fuente/tamano/outline/sombra de los objetos `CombatTextFont`,
+  `DamageNumberFont`, `WorldFont` si existen.
+- Los CVars de texto de mundo PERSISTEN en Config.wtf. Por eso se guarda una foto pristina en
+  `settings.combatText.pristine` (valor por defecto de Blizzard via `GetCVarDefault`, o el primer
+  valor visto con el modulo OFF) y desactivar/`restore` vuelven a ella. No capturar "originales"
+  en cada login: serian los valores que puso el propio modulo la sesion anterior.
+- Usa LibStub/LibSharedMedia-3.0 SOLO si otro addon los carga (fuentes extra); sin dependencia.
+- Default OFF. `/rapzo damage status` informa cuantos CVars y objetos de fuente encontro.
+- Panel como subcategoria Blizzard "Combat Text" (compacto: el canvas no tiene scroll) y checkbox
+  global en Config.
+
 ## 9. HUD: arquitectura y reglas criticas
 
 El HUD es la zona mas sensible del addon. Antes de cambiarlo, leer juntos los seis archivos:
@@ -501,6 +573,13 @@ Modules/HUD/HUDPreview.lua
 
 No crees otra familia paralela de hooks, AuraContainers, castbars o eventos sin comprobar primero
 si ya existe una implementacion en estos archivos.
+
+Reglas de rendimiento (2026-09-10): `UpdateUnitFrames` (cada `UNIT_HEALTH`/`UNIT_POWER_*`) SOLO
+escribe valores; `ApplyFrameStyle` (anclajes, fuentes, auras, castbar, recurso) se aplica al crear
+displays, al cambiar estilo/escala, en `PLAYER_TARGET_CHANGED`/`PLAYER_FOCUS_CHANGED` y en
+`PLAYER_REGEN_ENABLED`. No volver a enganchar `ApplyFrameStyle` ni `UpdateClassResource` a
+`UpdateUnitFrames`. Los `UNIT_*` se registran con `RB:RegisterUnitEventSafe` para
+player/target/focus. `HUD:GetStyle()` y compania leen `HUD.config` sin `EnsureDB`.
 
 ### 9.1 Componentes independientes
 
@@ -552,6 +631,11 @@ protegida ni deben escribir campos en barras protegidas.
 - Mantiene el AuraContainer nativo de Target/Focus, reanclado de forma segura cuando corresponde.
 
 Nunca elimines V1 para reemplazarlo con un experimento. Agrega estilos seleccionables o itera V2.
+
+V2 -> V1 es reversible sin `/reload`: `applyToxiTypography` toma un snapshot de fuentes, sombras y
+colores la primera vez (`display.RapzoQoLTypographySnapshot`) y `applyStyle1` lo restaura junto
+con el alto del nombre (14), color del power y fondos (`HUD.COLORS`). Si V2 toca algo nuevo,
+anadirlo a la restauracion.
 
 ### 9.4 Estilo V2 — ToxiUI
 
@@ -730,6 +814,40 @@ Filtro de expansion:
 /rapzo expfilter on|off
 ```
 
+Cooldown Pulse:
+
+```text
+/rapzo pulse                      # abre la configuracion
+/rapzo pulse status
+/rapzo pulse on|off
+/rapzo pulse scan
+/rapzo pulse test
+/rapzo pulse list
+/rapzo pulse ignore <ID|nombre>
+/rapzo pulse enable <ID|nombre>
+/rapzo pulse reset
+/rapzo pulse min <2-120>
+/rapzo pulse size <56-180>
+/rapzo pulse combat [on|off]
+/rapzo pulse sound [on|off]
+/rapzo pulse move
+```
+
+Combat Text (alias `/rapzo combattext`):
+
+```text
+/rapzo damage                     # abre la configuracion
+/rapzo damage status
+/rapzo damage on|off
+/rapzo damage apply
+/rapzo damage font [next|prev]
+/rapzo damage scale <0.5-5>
+/rapzo damage gravity <-10..10>
+/rapzo damage duration <0.1-3>
+/rapzo damage reset
+/rapzo damage restore             # vuelve a los valores de Blizzard
+```
+
 ReflectHerald (alias corto `/rh`):
 
 ```text
@@ -801,7 +919,14 @@ Ya esta implementado en codigo:
 - guards de combate y restauracion para reducir taint con mUI;
 - estados de Config corregidos para HUD y Vendor;
 - AFK reforzado frente a combate y valores/eventos secretos;
-- nombres internos visibles, mensajes de Vendor, icono y documentacion limpiados.
+- nombres internos visibles, mensajes de Vendor, icono y documentacion limpiados;
+- modulos Cooldown Pulse (aviso de cooldown listo, Midnight-safe) y Combat Text (fuentes y
+  fisica del texto de combate de Blizzard);
+- revision completa del 2026-09-10 aplicada (`INFORME_REVISION_2026-09-10.md`): ranuras 11/12 del
+  Vendor visibles, compra segura con filtro, housing en Collections, personaje fantasma por reino
+  con apostrofe/espacio migrado, banco protegido al cerrar, CVars de Combat Text restaurables,
+  Cooldown Pulse sin perder avisos, HUD sin relayout por tick y V2 -> V1 reversible, checkboxes
+  para los cuatro modulos que no tenian, arnes de smoke test con stubs de WoW (fuera del repo).
 
 ## 12. Estado pendiente y validacion real
 
@@ -820,13 +945,15 @@ No asumir que "implementado" equivale a "visualmente perfecto". Pendientes actua
    `cleuBlocked` deja el popup en una sola aparicion y probar test, status y retry (seccion 8.10).
 10. Crear tag/release alpha5 solo por peticion explicita; el ultimo tag observado sigue siendo
     `v3.0.0-alpha3` aunque el codigo declara alpha5.
-11. **Revision completa del 2026-09-10**: ver `INFORME_REVISION_2026-09-10.md` (hallazgos con
-    archivo:linea, severidad y fix por modulo, plan por sesiones y dudas a validar en juego).
-    Los mas graves: ranuras 11/12 del Vendor invisibles, housing siempre "no obtenido", personaje
-    fantasma por reino con apostrofe/espacio, `map()` del Vendor comprando el objeto equivocado,
-    CVars de Combat Text no restaurables y Cooldown Pulse perdiendo avisos tras cada reescaneo.
-    Este CLAUDE.md aun no documenta los modulos CooldownPulse ni CombatText (TOC, comandos,
-    settings); hacerlo al aplicar los fixes.
+11. **Validar en juego los fixes de la revision del 2026-09-10** (`INFORME_REVISION_2026-09-10.md`,
+    seccion 7 "Estado"): ninguno se probo dentro de WoW, solo con un arnes de stubs. Prioridad:
+    vendedor con mas de 12 objetos (fila 3 completa), compra con filtro "No obtenidos", decoracion
+    de housing ya comprada marcada OBTENIDO, `/rapzo gold` sin duplicados, abrir/cerrar banco
+    rapido, `/rapzo hud style 2` -> `style 1` sin `/reload`, Cooldown Pulse tras una pantalla de
+    carga, `/rapzo damage status` (cuantos CVars existen) y los dos paneles de Config.
+12. Las dudas de la seccion 5 del informe (existencia de `isActive/isOnGCD`, CVars `WorldText*`,
+    `SendChatMessage` en instancias, slots del banco cerrado, `==` contra secretos) siguen
+    abiertas hasta probarlas en juego.
 
 ## 13. Checklist de prueba dentro de WoW
 
