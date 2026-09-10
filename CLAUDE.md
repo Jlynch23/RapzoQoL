@@ -820,6 +820,13 @@ No asumir que "implementado" equivale a "visualmente perfecto". Pendientes actua
    `cleuBlocked` deja el popup en una sola aparicion y probar test, status y retry (seccion 8.10).
 10. Crear tag/release alpha5 solo por peticion explicita; el ultimo tag observado sigue siendo
     `v3.0.0-alpha3` aunque el codigo declara alpha5.
+11. **Revision completa del 2026-09-10**: ver `INFORME_REVISION_2026-09-10.md` (hallazgos con
+    archivo:linea, severidad y fix por modulo, plan por sesiones y dudas a validar en juego).
+    Los mas graves: ranuras 11/12 del Vendor invisibles, housing siempre "no obtenido", personaje
+    fantasma por reino con apostrofe/espacio, `map()` del Vendor comprando el objeto equivocado,
+    CVars de Combat Text no restaurables y Cooldown Pulse perdiendo avisos tras cada reescaneo.
+    Este CLAUDE.md aun no documenta los modulos CooldownPulse ni CombatText (TOC, comandos,
+    settings); hacerlo al aplicar los fixes.
 
 ## 13. Checklist de prueba dentro de WoW
 
