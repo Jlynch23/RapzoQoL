@@ -12,14 +12,18 @@ RB:RegisterModule("cooldownPulse", CooldownPulse)
 
 local BANK_PLAYER = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
 local TYPE_SPELL = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell or 1
-local POLL_INTERVAL = 0.10
+local POLL_INTERVAL = 0.25          -- SPELL_UPDATE_COOLDOWN ya fuerza una lectura inmediata
 local MIN_REAL_COOLDOWN = 1.50
+local GENERAL_MIN_HINT = 20         -- raciales de la pestana General: solo con cooldown base >= 20 s
 local DEFAULT_MIN_COOLDOWN = 8
 local DEFAULT_ICON_SIZE = 96
 local DEFAULT_Y = 145
 
 local engine = CreateFrame("Frame")
 local visual
+local holder                       -- ancla sin escala: el pulso escala el hijo, no el offset
+local settingsCache                -- tabla de settings (se lee 10+ veces/s desde el poll)
+local enabledCache = false
 local settingsPanel
 local settingsCategory
 local accumulator = 0
@@ -48,6 +52,7 @@ local function plain(value)
 end
 
 local function getSettings()
+    if settingsCache then return settingsCache end
     local db = RB:EnsureDB()
     db.settings.cooldownPulse = type(db.settings.cooldownPulse) == "table" and db.settings.cooldownPulse or {}
     local s = db.settings.cooldownPulse
@@ -64,6 +69,7 @@ local function getSettings()
     s.learned = type(s.learned) == "table" and s.learned or {}
     s.minCooldown = clamp(s.minCooldown, 2, 120)
     s.iconSize = clamp(s.iconSize, 56, 180)
+    settingsCache = s
     return s
 end
 
@@ -75,7 +81,8 @@ local function getLearnedStore()
 end
 
 local function isEnabled()
-    return RB:IsFeatureEnabled("cooldownPulse", true)
+    enabledCache = RB:IsFeatureEnabled("cooldownPulse", true)
+    return enabledCache
 end
 
 local function getSpellInfo(spellID)
@@ -101,19 +108,25 @@ local function getBaseCooldownHint(spellID)
     return nil
 end
 
--- Returns active, onGCD, readableDuration.
+-- Returns active, onGCD, readableDuration (nil si no se puede leer nada).
 local function readCooldown(spellID)
     if not (C_Spell and C_Spell.GetSpellCooldown) then return nil end
     local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
     if not ok or type(info) ~= "table" then return nil end
 
-    -- isActive/isOnGCD son NeverSecret en 12.x. Los numeros se aceptan solo si
-    -- realmente son valores Lua legibles.
-    local active = info.isActive and true or false
-    local onGCD = info.isOnGCD and true or false
+    -- isActive/isOnGCD son NeverSecret en 12.x. Si el cliente no los expone (o
+    -- llegaran secretos) se cae a la duracion legible: >0 activo, <=1.5 s = GCD.
     local duration = plain(info.duration)
     if type(duration) ~= "number" then duration = nil end
-    return active, onGCD, duration
+
+    local active = plain(info.isActive)
+    local onGCD = plain(info.isOnGCD)
+    if active == nil then
+        if duration == nil then return nil end
+        active = duration > 0
+        onGCD = active and duration <= MIN_REAL_COOLDOWN
+    end
+    return active and true or false, onGCD and true or false, duration
 end
 
 local function getAccent()
@@ -126,10 +139,17 @@ end
 local function createVisual()
     if visual then return visual end
 
-    local f = CreateFrame("Frame", "RapzoQoLCooldownPulseFrame", UIParent, "BackdropTemplate")
+    -- El holder es el que se ancla a UIParent y se arrastra; el frame visual es
+    -- hijo centrado en el y es el que se escala. Escalar el frame anclado con
+    -- offset desplazaba el icono durante la animacion.
+    holder = CreateFrame("Frame", "RapzoQoLCooldownPulseAnchor", UIParent)
+    holder:SetFrameStrata("HIGH")
+    holder:SetClampedToScreen(true)
+    holder:SetMovable(true)
+
+    local f = CreateFrame("Frame", "RapzoQoLCooldownPulseFrame", holder, "BackdropTemplate")
     f:SetFrameStrata("HIGH")
-    f:SetClampedToScreen(true)
-    f:SetMovable(true)
+    f:SetPoint("CENTER", holder, "CENTER", 0, 0)
     f:RegisterForDrag("LeftButton")
     f:EnableMouse(false)
     f:SetBackdrop({
@@ -163,19 +183,19 @@ local function createVisual()
     mover:Hide()
     f.moverText = mover
 
-    f:SetScript("OnDragStart", function(self)
-        if moverMode then self:StartMoving() end
+    f:SetScript("OnDragStart", function()
+        if moverMode and holder then holder:StartMoving() end
     end)
-    f:SetScript("OnDragStop", function(self)
-        if not moverMode then return end
-        self:StopMovingOrSizing()
-        local cx, cy = self:GetCenter()
+    f:SetScript("OnDragStop", function()
+        if not moverMode or not holder then return end
+        holder:StopMovingOrSizing()
+        local cx, cy = holder:GetCenter()
         local px, py = UIParent:GetCenter()
         if cx and cy and px and py then
             local s = getSettings()
             s.x, s.y = cx - px, cy - py
-            self:ClearAllPoints()
-            self:SetPoint("CENTER", UIParent, "CENTER", s.x, s.y)
+            holder:ClearAllPoints()
+            holder:SetPoint("CENTER", UIParent, "CENTER", s.x, s.y)
         end
     end)
 
@@ -224,8 +244,9 @@ function CooldownPulse:ApplyVisualSettings()
     local s = getSettings()
     local size = s.iconSize
     f:SetSize(size, size)
-    f:ClearAllPoints()
-    f:SetPoint("CENTER", UIParent, "CENTER", s.x or 0, s.y or DEFAULT_Y)
+    holder:SetSize(size, size)
+    holder:ClearAllPoints()
+    holder:SetPoint("CENTER", UIParent, "CENTER", s.x or 0, s.y or DEFAULT_Y)
     local r, g, b = getAccent()
     f:SetBackdropBorderColor(r, g, b, 0.95)
     f.ready:SetTextColor(r, g, b)
@@ -296,7 +317,7 @@ local function clearCatalog()
     wipe(states)
 end
 
-local function addSpell(seen, info, group)
+local function addSpell(seen, info, group, requireHint)
     if not info or info.itemType ~= TYPE_SPELL or info.isPassive or info.isOffSpec then return end
 
     local key = tonumber(info.actionID) or tonumber(info.spellID)
@@ -312,6 +333,11 @@ local function addSpell(seen, info, group)
     end
     if not name or name == "" then return end
 
+    local hint = getBaseCooldownHint(spellID) or getBaseCooldownHint(key)
+    -- Pestana General (raciales y utilidades): solo entran los poderes con un
+    -- cooldown base conocido y largo, para no llenar la lista de basura.
+    if requireHint and not (hint and hint >= GENERAL_MIN_HINT) then return end
+
     seen[key] = true
     local active, onGCD = readCooldown(spellID)
     local running = active == true and onGCD ~= true
@@ -321,7 +347,7 @@ local function addSpell(seen, info, group)
         name = name,
         icon = icon,
         group = group or "Spells",
-        baseCooldownHint = getBaseCooldownHint(spellID) or getBaseCooldownHint(key),
+        baseCooldownHint = hint,
     }
 
     -- Si escaneamos mientras el poder ya estaba en cooldown, no conocemos su inicio.
@@ -347,14 +373,17 @@ local function scanLines(coreOnly)
     end
 
     local coreNames = getCoreLineNames()
+    local generalName = _G.GENERAL or "General"
     local seen = {}
 
     for lineIndex = 1, numLines do
-        local line = C_SpellBook.GetSpellBookSkillLineInfo(lineIndex)
+        local okLine, line = pcall(C_SpellBook.GetSpellBookSkillLineInfo, lineIndex)
+        if not okLine or type(line) ~= "table" then line = nil end
         -- IMPORTANTE: Lua considera 0 como true. Algunos clientes usan offSpecID=0
         -- para una linea utilizable; por eso `not line.offSpecID` descartaba todo.
         local usable = line and not line.shouldHide and (line.offSpecID == nil or line.offSpecID == 0)
-        if usable and coreOnly and not coreNames[line.name or ""] then
+        local isGeneral = line and line.name == generalName
+        if usable and coreOnly and not coreNames[line.name or ""] and not isGeneral then
             usable = false
         end
 
@@ -365,7 +394,7 @@ local function scanLines(coreOnly)
 
             for slot = first, last do
                 local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, slot, BANK_PLAYER)
-                if ok then addSpell(seen, info, line.name) end
+                if ok then addSpell(seen, info, line.name, coreOnly and isGeneral) end
             end
         end
     end
@@ -373,7 +402,15 @@ local function scanLines(coreOnly)
     return #catalog
 end
 
+local handleEntry -- definida mas abajo; ScanSpells la usa para reconciliar estados
+
 function CooldownPulse:ScanSpells(verbose)
+    -- Se conservan los estados en curso: un reescaneo (pantalla de carga,
+    -- SPELLS_CHANGED, abrir el panel) no debe perder el startedAt de un cooldown
+    -- que sigue corriendo, o su fin no avisaria.
+    local kept = {}
+    for key, st in pairs(states) do kept[key] = st end
+
     clearCatalog()
 
     local count = scanLines(true)
@@ -388,6 +425,16 @@ function CooldownPulse:ScanSpells(verbose)
         if a.group ~= b.group then return tostring(a.group) < tostring(b.group) end
         return tostring(a.name) < tostring(b.name)
     end)
+
+    local now = GetTime()
+    for _, entry in ipairs(catalog) do
+        local previous = kept[entry.key]
+        if previous then
+            states[entry.key] = previous
+            -- Reconciliar ya: si el cooldown termino durante el reescaneo, avisa ahora.
+            if handleEntry then handleEntry(entry, now) end
+        end
+    end
 
     initialized = true
     if count > 0 then
@@ -411,16 +458,19 @@ local function learnedDuration(entry)
     return tonumber(getLearnedStore()[entry.key])
 end
 
+-- Se guarda la ULTIMA duracion medida (no el maximo): con cargas o resets de
+-- cooldown el maximo se inflaba y nunca volvia a bajar.
 local function learnDuration(entry, elapsed)
     if not entry or not elapsed or elapsed < MIN_REAL_COOLDOWN then return end
     local store = getLearnedStore()
-    local known = tonumber(store[entry.key])
-    if not known or elapsed > known then
-        store[entry.key] = math.floor((elapsed * 10) + 0.5) / 10
-    end
+    store[entry.key] = math.floor((elapsed * 10) + 0.5) / 10
 end
 
-local function handleEntry(entry, now)
+-- Nota sobre el GCD: si a un cooldown real le queda menos de un GCD y se lanza
+-- otro hechizo, el API lo reporta como GCD y el pulso sale hasta ~1 s antes de
+-- tiempo. Esperar a `not active` seria peor: encadenando casts el aviso se
+-- retrasaria hasta el primer hueco sin GCD. Se acepta el adelanto.
+handleEntry = function(entry, now)
     local active, onGCD = readCooldown(entry.spellID)
     if active == nil then return end
 
@@ -464,6 +514,8 @@ local function pollCooldowns()
     if not initialized then return end
     local s = getSettings()
     local now = GetTime()
+    enabledCache = isEnabled()
+    if not enabledCache then return end
 
     for _, entry in ipairs(catalog) do
         if not s.ignored[entry.key] then
@@ -474,6 +526,7 @@ end
 
 function CooldownPulse:SetEnabled(enabled)
     RB:SetFeatureEnabled("cooldownPulse", enabled == true, true)
+    enabledCache = enabled == true
     if enabled then
         self:ScanSpells(false)
     elseif visual and not moverMode then
@@ -679,9 +732,9 @@ function CooldownPulse:RefreshSpellRows()
 
         local known = tonumber(learned[entry.key])
         if known then
-            row.metaText:SetText(("ID %d · %.1fs"):format(entry.key, known))
+            row.metaText:SetText(("ID %d - %.1fs"):format(entry.key, known))
         else
-            row.metaText:SetText(("ID %d · aprendiendo"):format(entry.key))
+            row.metaText:SetText(("ID %d - aprendiendo"):format(entry.key))
         end
         row:Show()
     end
@@ -791,7 +844,9 @@ function CooldownPulse:CreateSettingsPanel()
     hint:SetText("Marca/desmarca poderes directamente. La duracion se aprende al usarlos; el minimo se aplica al cooldown real medido.")
 
     panel:SetScript("OnShow", function()
-        CooldownPulse:ScanSpells(false)
+        -- Solo reescanea si aun no hay catalogo: abrir el panel no debe perder
+        -- las mediciones en curso (ScanSpells ya las conserva, pero es gratis evitarlo).
+        if #catalog == 0 then CooldownPulse:ScanSpells(false) end
         CooldownPulse:RefreshSettingsPanel()
     end)
     settingsPanel = panel
@@ -938,10 +993,11 @@ RB:RegisterCommand("pulse", function(rest) CooldownPulse:HandleSlash(rest) end,
     "/rapzo pulse [config|status|on|off|scan|test|list|ignore|enable|min|size|move] - aviso de cooldown listo")
 
 engine:SetScript("OnUpdate", function(_, elapsed)
-    if not initialized or not isEnabled() then return end
+    -- Sin EnsureDB por frame: el estado ON/OFF se cachea y se refresca en cada poll.
+    if not initialized or not enabledCache then return end
     accumulator = accumulator + elapsed
     if accumulator < POLL_INTERVAL then return end
-    accumulator = accumulator % POLL_INTERVAL
+    accumulator = 0
     pollCooldowns()
 end)
 
@@ -969,6 +1025,7 @@ end
 engine:SetScript("OnEvent", function(_, event, unit)
     if event == "PLAYER_LOGIN" then
         getSettings()
+        isEnabled()
         createVisual()
         scheduleScan(0.35, 3)
         if C_Timer and C_Timer.After then
@@ -977,6 +1034,7 @@ engine:SetScript("OnEvent", function(_, event, unit)
             CooldownPulse:RegisterSettings()
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
+        isEnabled()
         scheduleScan(0.50, 2)
     elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
         if not unit or unit == "player" then scheduleScan(0.30, 2) end
@@ -984,8 +1042,11 @@ engine:SetScript("OnEvent", function(_, event, unit)
         scheduleScan(0.25, 2)
     elseif event == "SPELL_UPDATE_COOLDOWN" then
         -- isOnGCD esta documentado como especialmente fiable al responder a este
-        -- evento, asi que hacemos una lectura inmediata ademas del polling de 0.1 s.
-        if initialized and isEnabled() then pollCooldowns() end
+        -- evento: lectura inmediata y se reinicia el intervalo del polling.
+        if initialized and enabledCache then
+            accumulator = 0
+            pollCooldowns()
+        end
     end
 end)
 

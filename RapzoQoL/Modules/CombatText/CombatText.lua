@@ -42,6 +42,11 @@ local original = {
     uiFonts = {},
 }
 
+-- CVars que existen realmente en este cliente (se validan una vez por sesion).
+local knownCVars = {}
+local knownCVarCount = 0
+local knownFontObjects = 0
+
 local fontCatalog = {}
 local fontIndexByName = {}
 local settingsPanel
@@ -111,6 +116,63 @@ local function getCVarSafe(name)
     return nil
 end
 
+local function getCVarDefaultSafe(name)
+    if C_CVar and type(C_CVar.GetCVarDefault) == "function" then
+        local ok, value = pcall(C_CVar.GetCVarDefault, name)
+        if ok and value ~= nil then return value end
+    end
+    if type(GetCVarDefault) == "function" then
+        local ok, value = pcall(GetCVarDefault, name)
+        if ok and value ~= nil then return value end
+    end
+    return nil
+end
+
+local function cvarExists(name)
+    if C_CVar and type(C_CVar.GetCVarInfo) == "function" then
+        local ok, value = pcall(C_CVar.GetCVarInfo, name)
+        return ok and value ~= nil
+    end
+    return getCVarSafe(name) ~= nil
+end
+
+local function validateCVars()
+    wipe(knownCVars)
+    knownCVarCount = 0
+    for _, name in ipairs(WORLD_CVARS) do
+        if cvarExists(name) then
+            knownCVars[name] = true
+            knownCVarCount = knownCVarCount + 1
+        end
+    end
+end
+
+-- Foto pristina de los CVars, persistida en la DB. Los CVars de texto de mundo
+-- se guardan en Config.wtf entre sesiones: capturarlos en cada login tomaba los
+-- valores que el propio modulo puso la sesion anterior, y "restaurar" nunca
+-- volvia a Blizzard. Prioridad: valor por defecto de Blizzard; si el cliente
+-- no lo expone, el valor visto la primera vez con el modulo apagado.
+local function getPristine()
+    local s = getSettings()
+    s.pristine = type(s.pristine) == "table" and s.pristine or {}
+    return s.pristine
+end
+
+local function capturePristine()
+    local pristine = getPristine()
+    for _, name in ipairs(WORLD_CVARS) do
+        if pristine[name] == nil and knownCVars[name] then
+            local default = getCVarDefaultSafe(name)
+            if default ~= nil then
+                pristine[name] = tostring(default)
+            elseif not isEnabled() then
+                local current = getCVarSafe(name)
+                if current ~= nil then pristine[name] = tostring(current) end
+            end
+        end
+    end
+end
+
 local function captureOriginal()
     if original.captured then return end
     original.captured = true
@@ -120,9 +182,11 @@ local function captureOriginal()
         original.cvars[name] = getCVarSafe(name)
     end
 
+    knownFontObjects = 0
     for _, info in ipairs(UI_FONT_OBJECTS) do
         local obj = info.object()
         if obj and obj.GetFont then
+            knownFontObjects = knownFontObjects + 1
             local ok, path, size, flags = pcall(obj.GetFont, obj)
             if ok and path then
                 local entry = { path = path, size = size, flags = flags }
@@ -198,9 +262,14 @@ end
 
 local function restoreWorldText()
     if original.damageTextFont then _G.DAMAGE_TEXT_FONT = original.damageTextFont end
+    local pristine = getPristine()
     for _, name in ipairs(WORLD_CVARS) do
-        local value = original.cvars[name]
-        if value ~= nil then setCVarSafe(name, value) end
+        if knownCVars[name] then
+            local value = pristine[name]
+            if value == nil then value = getCVarDefaultSafe(name) end
+            if value == nil then value = original.cvars[name] end
+            if value ~= nil then setCVarSafe(name, value) end
+        end
     end
 end
 
@@ -231,6 +300,19 @@ function CombatText:RestoreOriginal()
     restoreUIText()
 end
 
+-- Fuente 3D: el motor lee DAMAGE_TEXT_FONT al inicializar el texto de mundo,
+-- asi que se asigna lo antes posible (ADDON_LOADED del propio addon, con las
+-- SavedVariables ya cargadas) ademas de en PLAYER_LOGIN.
+function CombatText:ApplyWorldFontEarly()
+    if not isEnabled() then return end
+    local s = getSettings()
+    if not s.worldEnabled then return end
+    if original.damageTextFont == nil then original.damageTextFont = _G.DAMAGE_TEXT_FONT end
+    if #fontCatalog == 0 then self:RebuildFontCatalog() end
+    local worldPath = resolveFont(s.worldFont, s.worldFontPath)
+    if worldPath then _G.DAMAGE_TEXT_FONT = worldPath end
+end
+
 function CombatText:ApplySystemFonts(quiet)
     captureOriginal()
     if #fontCatalog == 0 then self:RebuildFontCatalog() end
@@ -250,10 +332,17 @@ function CombatText:ApplySystemFonts(quiet)
         if worldEntry and worldEntry.name then s.worldFont = worldEntry.name end
         _G.DAMAGE_TEXT_FONT = worldPath
 
+        capturePristine()
+        local values = {
+            WorldTextScale = round(s.worldScale, 2),
+            WorldTextGravity = round(s.worldGravity, 2),
+            WorldTextRampDuration = round(s.worldDuration, 2),
+        }
         for _, suffix in ipairs({ "", "_v2" }) do
-            setCVarSafe("WorldTextScale" .. suffix, round(s.worldScale, 2))
-            setCVarSafe("WorldTextGravity" .. suffix, round(s.worldGravity, 2))
-            setCVarSafe("WorldTextRampDuration" .. suffix, round(s.worldDuration, 2))
+            for base, value in pairs(values) do
+                local name = base .. suffix
+                if knownCVars[name] then setCVarSafe(name, value) end
+            end
         end
     else
         restoreWorldText()
@@ -335,14 +424,19 @@ end
 
 function CombatText:PrintStatus()
     local s = getSettings()
-    RB:Print(("Combat Text %s | dano 3D %s | fuente %s | escala %.1f | gravedad %.1f | duracion %.1f | UI %s"):format(
+    RB:Print(("Combat Text %s | dano 3D %s | fuente %s | escala %.1f | gravedad %.1f | duracion %.1f | UI %s | CVars %d/%d | fuentes UI %d/%d"):format(
         isEnabled() and "ON" or "OFF",
         s.worldEnabled and "ON" or "OFF",
         tostring(s.worldFont),
         s.worldScale,
         s.worldGravity,
         s.worldDuration,
-        s.uiEnabled and "ON" or "OFF"))
+        s.uiEnabled and "ON" or "OFF",
+        knownCVarCount, #WORLD_CVARS,
+        knownFontObjects, #UI_FONT_OBJECTS))
+    if knownCVarCount == 0 then
+        RB:Print("Combat Text: este cliente no expone los CVars WorldText*; escala/gravedad/duracion no tendran efecto.")
+    end
 end
 
 local function makeCheck(parent, label, x, y, getValue, setValue)
@@ -399,62 +493,63 @@ function CombatText:CreateSettingsPanel()
     intro:SetText("Personaliza los numeros de dano/heal de Blizzard: fuente, escala y animacion. Las fuentes de SharedMedia aparecen automaticamente.")
 
     local warning = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    warning:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -72)
+    warning:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -66)
     warning:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
     warning:SetJustifyH("LEFT")
     warning:SetText("|cffff5555Importante:|r cambiar la fuente del dano 3D requiere salir a seleccion de personaje y volver a entrar. Escala, gravedad y duracion son instantaneas.")
 
     panel.checks = {}
-    panel.checks[#panel.checks + 1] = makeCheck(panel, "Activar Combat Text", 22, -116,
+    -- Layout compacto: el canvas de Blizzard Settings no tiene scroll.
+    panel.checks[#panel.checks + 1] = makeCheck(panel, "Activar Combat Text", 22, -108,
         isEnabled, function(v) CombatText:SetEnabled(v) end)
-    panel.checks[#panel.checks + 1] = makeCheck(panel, "Modificar dano/heal 3D", 22, -150,
+    panel.checks[#panel.checks + 1] = makeCheck(panel, "Modificar dano/heal 3D", 22, -138,
         function() return getSettings().worldEnabled end,
         function(v) getSettings().worldEnabled = v end)
-    panel.checks[#panel.checks + 1] = makeCheck(panel, "Modificar Scrolling Combat Text", 280, -150,
+    panel.checks[#panel.checks + 1] = makeCheck(panel, "Modificar Scrolling Combat Text", 280, -138,
         function() return getSettings().uiEnabled end,
         function(v) getSettings().uiEnabled = v end)
 
     local worldTitle = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    worldTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 22, -196)
+    worldTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 22, -176)
     worldTitle:SetText("Dano / Healing sobre unidades")
 
     panel.worldFontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    panel.worldFontLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -226)
-    makeButton(panel, "<", 32, 300, -234, function()
+    panel.worldFontLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -202)
+    makeButton(panel, "<", 32, 300, -210, function()
         CombatText:CycleWorldFont(-1); CombatText:RefreshSettingsPanel()
     end)
-    makeButton(panel, ">", 32, 338, -234, function()
+    makeButton(panel, ">", 32, 338, -210, function()
         CombatText:CycleWorldFont(1); CombatText:RefreshSettingsPanel()
     end)
 
-    panel.scaleLabel = makeValueRow(panel, -270,
+    panel.scaleLabel = makeValueRow(panel, -240,
         function() local s=getSettings(); s.worldScale=clamp(round(s.worldScale-0.1,1),0.5,5); CombatText:ApplySystemFonts(true) end,
         function() local s=getSettings(); s.worldScale=clamp(round(s.worldScale+0.1,1),0.5,5); CombatText:ApplySystemFonts(true) end)
-    panel.gravityLabel = makeValueRow(panel, -308,
+    panel.gravityLabel = makeValueRow(panel, -272,
         function() local s=getSettings(); s.worldGravity=clamp(round(s.worldGravity-0.5,1),-10,10); CombatText:ApplySystemFonts(true) end,
         function() local s=getSettings(); s.worldGravity=clamp(round(s.worldGravity+0.5,1),-10,10); CombatText:ApplySystemFonts(true) end)
-    panel.durationLabel = makeValueRow(panel, -346,
+    panel.durationLabel = makeValueRow(panel, -304,
         function() local s=getSettings(); s.worldDuration=clamp(round(s.worldDuration-0.1,1),0.1,3); CombatText:ApplySystemFonts(true) end,
         function() local s=getSettings(); s.worldDuration=clamp(round(s.worldDuration+0.1,1),0.1,3); CombatText:ApplySystemFonts(true) end)
 
     local uiTitle = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    uiTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 22, -396)
+    uiTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 22, -344)
     uiTitle:SetText("Scrolling Combat Text")
 
     panel.uiFontLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    panel.uiFontLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -426)
-    makeButton(panel, "<", 32, 300, -434, function()
+    panel.uiFontLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -370)
+    makeButton(panel, "<", 32, 300, -378, function()
         CombatText:CycleUIFont(-1); CombatText:RefreshSettingsPanel()
     end)
-    makeButton(panel, ">", 32, 338, -434, function()
+    makeButton(panel, ">", 32, 338, -378, function()
         CombatText:CycleUIFont(1); CombatText:RefreshSettingsPanel()
     end)
 
-    panel.uiSizeLabel = makeValueRow(panel, -470,
+    panel.uiSizeLabel = makeValueRow(panel, -408,
         function() local s=getSettings(); s.uiSize=clamp(s.uiSize-1,8,48); CombatText:ApplySystemFonts(true) end,
         function() local s=getSettings(); s.uiSize=clamp(s.uiSize+1,8,48); CombatText:ApplySystemFonts(true) end)
 
-    panel.outlineButton = makeButton(panel, "Outline", 160, 24, -514, function()
+    panel.outlineButton = makeButton(panel, "Outline", 160, 24, -446, function()
         local s = getSettings()
         if s.uiOutline == "" then s.uiOutline = "OUTLINE"
         elseif s.uiOutline == "OUTLINE" then s.uiOutline = "THICKOUTLINE"
@@ -463,25 +558,25 @@ function CombatText:CreateSettingsPanel()
         CombatText:RefreshSettingsPanel()
     end)
 
-    panel.checks[#panel.checks + 1] = makeCheck(panel, "Monochrome", 205, -514,
+    panel.checks[#panel.checks + 1] = makeCheck(panel, "Monochrome", 205, -446,
         function() return getSettings().uiMonochrome end,
         function(v) getSettings().uiMonochrome = v end)
 
-    panel.shadowLabel = makeValueRow(panel, -556,
+    panel.shadowLabel = makeValueRow(panel, -484,
         function() local s=getSettings(); s.uiShadowOffset=clamp(s.uiShadowOffset-1,0,10); CombatText:ApplySystemFonts(true) end,
         function() local s=getSettings(); s.uiShadowOffset=clamp(s.uiShadowOffset+1,0,10); CombatText:ApplySystemFonts(true) end)
 
-    makeButton(panel, "Aplicar", 120, 24, -610, function() CombatText:ApplySystemFonts(false) end)
-    makeButton(panel, "Valores Rapzo", 140, 154, -610, function()
+    makeButton(panel, "Aplicar", 120, 24, -530, function() CombatText:ApplySystemFonts(false) end)
+    makeButton(panel, "Valores Rapzo", 140, 154, -530, function()
         CombatText:ResetDefaults(); CombatText:RefreshSettingsPanel()
     end)
-    makeButton(panel, "Restaurar sesion", 150, 304, -610, function()
+    makeButton(panel, "Restaurar Blizzard", 150, 304, -530, function()
         CombatText:RestoreOriginal()
-        RB:Print("Combat Text: restaurados temporalmente los valores capturados al iniciar sesion.")
+        RB:Print("Combat Text: valores de Blizzard restaurados hasta el proximo cambio de mundo (desactiva el modulo para que sea permanente).")
     end)
 
     panel.statusText = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.statusText:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -650)
+    panel.statusText:SetPoint("TOPLEFT", panel, "TOPLEFT", 24, -566)
     panel.statusText:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
     panel.statusText:SetJustifyH("LEFT")
 
@@ -519,7 +614,8 @@ function CombatText:RefreshSettingsPanel()
     end
     if settingsPanel.shadowLabel then settingsPanel.shadowLabel:SetText(("Sombra UI: %d px"):format(s.uiShadowOffset)) end
     if settingsPanel.statusText then
-        settingsPanel.statusText:SetText(("Fuentes disponibles: %d. Comando rapido: /rapzo damage"):format(#fontCatalog))
+        settingsPanel.statusText:SetText(("Fuentes disponibles: %d | CVars de texto de mundo: %d/%d | objetos de fuente UI: %d/%d | /rapzo damage"):format(
+            #fontCatalog, knownCVarCount, #WORLD_CVARS, knownFontObjects, #UI_FONT_OBJECTS))
     end
 end
 
@@ -567,7 +663,7 @@ function CombatText:HandleSlash(rest)
     elseif command == "reset" then
         self:ResetDefaults()
     elseif command == "restore" then
-        self:RestoreOriginal(); RB:Print("Combat Text: valores de sesion restaurados.")
+        self:RestoreOriginal(); RB:Print("Combat Text: valores de Blizzard restaurados.")
     elseif command == "scale" then
         local value = tonumber(arg)
         if not value then RB:Print("Uso: /rapzo damage scale <0.5-5>") return end
@@ -595,7 +691,7 @@ function CombatText:HandleSlash(rest)
         DEFAULT_CHAT_FRAME:AddMessage("  |cff38bdf8/rapzo damage scale <0.5-5>|r")
         DEFAULT_CHAT_FRAME:AddMessage("  |cff38bdf8/rapzo damage gravity <-10 a 10>|r")
         DEFAULT_CHAT_FRAME:AddMessage("  |cff38bdf8/rapzo damage duration <0.1-3>|r")
-        DEFAULT_CHAT_FRAME:AddMessage("  |cff38bdf8/rapzo damage restore|r - restaura los valores capturados al login")
+        DEFAULT_CHAT_FRAME:AddMessage("  |cff38bdf8/rapzo damage restore|r - restaura los valores de Blizzard")
     end
 end
 
@@ -604,9 +700,15 @@ RB:RegisterCommand("damage", function(rest) CombatText:HandleSlash(rest) end,
 RB:RegisterCommand("combattext", function(rest) CombatText:HandleSlash(rest) end)
 
 local eventFrame = CreateFrame("Frame")
-eventFrame:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_LOGIN" then
+eventFrame:SetScript("OnEvent", function(_, event, arg1)
+    if event == "ADDON_LOADED" then
+        if arg1 ~= addonName then return end
+        eventFrame:UnregisterEvent("ADDON_LOADED")
+        CombatText:ApplyWorldFontEarly()
+    elseif event == "PLAYER_LOGIN" then
+        validateCVars()
         captureOriginal()
+        capturePristine()
         CombatText:RebuildFontCatalog()
         if isEnabled() then CombatText:ApplySystemFonts(true) end
         if C_Timer and C_Timer.After then
@@ -618,6 +720,7 @@ eventFrame:SetScript("OnEvent", function(_, event)
         if isEnabled() then CombatText:ApplySystemFonts(true) end
     end
 end)
+RB:RegisterEventSafe(eventFrame, "ADDON_LOADED")
 RB:RegisterEventSafe(eventFrame, "PLAYER_LOGIN")
 RB:RegisterEventSafe(eventFrame, "PLAYER_ENTERING_WORLD")
 
