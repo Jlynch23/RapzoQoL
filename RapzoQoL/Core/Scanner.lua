@@ -143,12 +143,16 @@ function Scanner:GetBankIndexes()
         end
     end
 
-    -- Fallbacks for older/current layouts. Invalid or unavailable containers simply return 0 slots.
+    -- Fallback solo si el enum no existe. Enum.BagIndex en 12.x: CharacterBankTab_1..6 = 6..11,
+    -- AccountBankTab_1..5 = 12..16 (Keyring=-1, Characterbanktab=-2, Accountbanktab=-3).
     if #characterBank == 0 then
-        uniqueInsert(characterBank, seenCharacter, -1)
-        uniqueInsert(characterBank, seenCharacter, -3)
-        for bagID = 6, 12 do
+        for bagID = 6, 11 do
             uniqueInsert(characterBank, seenCharacter, bagID)
+        end
+    end
+    if #accountBank == 0 then
+        for bagID = 12, 16 do
+            uniqueInsert(accountBank, seenAccount, bagID)
         end
     end
 
@@ -183,6 +187,10 @@ function Scanner:ScanEquipment()
 end
 
 function Scanner:ScanBanks()
+    -- Con el banco cerrado los contenedores pueden seguir reportando slots pero
+    -- sin objetos: sobrescribir aqui borraria el banco guardado.
+    if not self.bankOpen then return end
+
     local characterBankIDs, accountBankIDs = self:GetBankIndexes()
 
     local characterBucket, characterContainers = scanBagIDs(characterBankIDs)
@@ -210,13 +218,25 @@ function Scanner:ScanAll(includeBanks)
     end
 end
 
+-- Un solo escaneo diferido por rafaga de eventos (PLAYERBANKSLOTS_CHANGED llega
+-- por ranura). El banco se re-comprueba al disparar: si se cerro en la ventana,
+-- no se toca lo guardado.
 function Scanner:ScheduleScan(includeBanks)
+    if includeBanks then self.pendingBanks = true end
+    if self.scanPending then return end
+
+    local function run()
+        local banks = Scanner.pendingBanks
+        Scanner.scanPending = false
+        Scanner.pendingBanks = false
+        Scanner:ScanAll(banks and Scanner.bankOpen)
+    end
+
     if C_Timer and C_Timer.After then
-        C_Timer.After(0.15, function()
-            Scanner:ScanAll(includeBanks)
-        end)
+        self.scanPending = true
+        C_Timer.After(0.15, run)
     else
-        self:ScanAll(includeBanks)
+        run()
     end
 end
 
@@ -226,19 +246,17 @@ function Scanner:Initialize()
     end
     self.initialized = true
 
+    -- Eventos reales de 12.x (BankDocumentation). El banco de banda de guerra
+    -- usa el mismo BANKFRAME_OPENED/CLOSED; BANK_TABS_CHANGED cubre pestanas nuevas.
     local events = {
         "BAG_UPDATE_DELAYED",
         "PLAYER_EQUIPMENT_CHANGED",
         "BANKFRAME_OPENED",
         "BANKFRAME_CLOSED",
         "PLAYERBANKSLOTS_CHANGED",
-        "PLAYERBANKBAGSLOTS_CHANGED",
-        "PLAYERREAGENTBANKSLOTS_CHANGED",
-        -- Newer retail/account-bank events are registered only when the client knows them.
-        "ACCOUNT_BANK_PANEL_OPENED",
-        "ACCOUNT_BANK_PANEL_CLOSED",
-        "ACCOUNT_BANK_TAB_SLOTS_CHANGED",
         "PLAYER_ACCOUNT_BANK_TAB_SLOTS_CHANGED",
+        "BANK_TABS_CHANGED",
+        "BANK_TAB_SETTINGS_UPDATED",
     }
 
     for _, event in ipairs(events) do
@@ -246,24 +264,20 @@ function Scanner:Initialize()
     end
 
     self.frame:SetScript("OnEvent", function(_, event)
-        if event == "BANKFRAME_OPENED" or event == "ACCOUNT_BANK_PANEL_OPENED" then
+        if event == "BANKFRAME_OPENED" then
             Scanner.bankOpen = true
             Scanner:ScheduleScan(true)
-        elseif event == "BANKFRAME_CLOSED" or event == "ACCOUNT_BANK_PANEL_CLOSED" then
+        elseif event == "BANKFRAME_CLOSED" then
             Scanner.bankOpen = false
         elseif event == "PLAYER_EQUIPMENT_CHANGED" then
             Scanner:ScanEquipment()
         elseif event == "BAG_UPDATE_DELAYED" then
-            Scanner:ScanInventory()
-            if Scanner.bankOpen then
-                Scanner:ScheduleScan(true)
-            end
+            Scanner:ScheduleScan(Scanner.bankOpen)
         else
             if Scanner.bankOpen then
                 Scanner:ScheduleScan(true)
             end
         end
     end)
-
-    self:ScanAll(false)
+    -- El primer escaneo lo dispara Core en PLAYER_LOGIN (reino y bolsas ya fiables).
 end

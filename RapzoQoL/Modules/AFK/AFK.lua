@@ -102,7 +102,8 @@ local function getConfig()
     if cfg.opacity < 0.35 then cfg.opacity = 0.35 end
     if cfg.opacity > 1 then cfg.opacity = 1 end
 
-    RB:SetFeatureEnabled("afk", cfg.enabled, true)
+    -- AFK:SetEnabled es el unico que sincroniza settings.modules.afk; hacerlo
+    -- aqui reescribia la DB en cada tick del temporizador.
     return cfg
 end
 
@@ -119,16 +120,19 @@ local function formatElapsed(seconds)
 end
 
 local function getSpecName()
-    if type(GetSpecialization) ~= "function" or type(GetSpecializationInfo) ~= "function" then
+    -- 11.1.5+: C_SpecializationInfo; las globales quedan como fallback deprecado.
+    local getSpec = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
+    local getSpecInfo = (C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo) or GetSpecializationInfo
+    if type(getSpec) ~= "function" or type(getSpecInfo) ~= "function" then
         return nil
     end
 
-    local okIndex, specIndex = pcall(GetSpecialization)
+    local okIndex, specIndex = pcall(getSpec)
     if not okIndex or not specIndex or isSecret(specIndex) then
         return nil
     end
 
-    local okInfo, _, specName = pcall(GetSpecializationInfo, specIndex)
+    local okInfo, _, specName = pcall(getSpecInfo, specIndex)
     if not okInfo or not specName or isSecret(specName) then
         return nil
     end
@@ -166,8 +170,9 @@ local function getMoneyText()
     local ok, copper = pcall(GetMoney)
     if not ok or not copper or isSecret(copper) then return nil end
 
-    if type(GetCoinTextureString) == "function" then
-        local okText, text = pcall(GetCoinTextureString, copper)
+    local formatter = (C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString) or GetCoinTextureString
+    if type(formatter) == "function" then
+        local okText, text = pcall(formatter, copper)
         if okText and text and not isSecret(text) then
             return text
         end

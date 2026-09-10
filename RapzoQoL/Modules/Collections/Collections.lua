@@ -8,17 +8,33 @@ RB:RegisterModule("collections", Collections)
 Collections.cache = {}
 Collections.initialized = false
 
+local function isSecret(value)
+    return type(issecretvalue) == "function" and issecretvalue(value)
+end
+
 local function tooltipKnown(itemID)
     if not C_TooltipInfo or type(C_TooltipInfo.GetItemByID) ~= "function" then return false end
     local ok, info = pcall(C_TooltipInfo.GetItemByID, itemID)
     if not ok or type(info) ~= "table" or type(info.lines) ~= "table" then return false end
     for _, line in ipairs(info.lines) do
         if type(line) == "table" then
-            if ITEM_SPELL_KNOWN and line.leftText == ITEM_SPELL_KNOWN then return true end
-            if Enum and Enum.TooltipDataLineType and line.type == Enum.TooltipDataLineType.RestrictedSpellKnown then return true end
+            -- En contenido restringido el texto puede ser secreto: no compararlo.
+            local text = line.leftText
+            if ITEM_SPELL_KNOWN and not isSecret(text) and text == ITEM_SPELL_KNOWN then return true end
         end
     end
     return false
+end
+
+-- Un objeto sin datos cacheados devuelve nil en GetMountFromItem/GetToyInfo/etc.
+-- y se marcaria como "no coleccionable" para siempre. No se cachea hasta que
+-- el cliente tenga la informacion.
+local function isItemDataReady(itemID)
+    if C_Item and type(C_Item.IsItemDataCachedByID) == "function" then
+        local ok, cached = pcall(C_Item.IsItemDataCachedByID, itemID)
+        if ok then return cached == true end
+    end
+    return true
 end
 
 local function getPetState(itemID)
@@ -117,7 +133,13 @@ local function getHousingState(itemID)
     if not C_HousingCatalog or type(C_HousingCatalog.GetCatalogEntryInfoByItem) ~= "function" then return nil end
     local ok, info = pcall(C_HousingCatalog.GetCatalogEntryInfoByItem, itemID)
     if not ok or type(info) ~= "table" then return nil end
-    return (tonumber(info.quantity) or 0) > 0, "Decoracion"
+    -- HousingCatalogEntryInfo (12.x) no tiene `quantity`: lo poseido es lo
+    -- almacenado mas lo colocado. `quantity` se deja como fallback por si
+    -- Blizzard lo anade en el futuro.
+    local stored = tonumber(info.totalNumStored) or 0
+    local placed = tonumber(info.totalNumPlaced) or 0
+    local quantity = tonumber(info.quantity) or 0
+    return (stored + placed + quantity) > 0, "Decoracion"
 end
 
 local detectors = {getToyState, getMountState, getPetState, getHeirloomState, getRecipeState, getTransmogSetState, getTransmogState, getHousingState}
@@ -126,24 +148,36 @@ function Collections:ClearCache()
     wipe(self.cache)
 end
 
+function Collections:InvalidateItem(itemID)
+    itemID = tonumber(itemID)
+    if itemID then self.cache[itemID] = nil end
+end
+
 function Collections:GetState(itemID)
     if not RB:IsFeatureEnabled("collections") then return false, nil end
     itemID = tonumber(itemID)
     if not itemID then return false, nil end
     local cached = self.cache[itemID]
     if type(cached) == "table" then return cached.collected == true, cached.kind or nil end
+    local ready = isItemDataReady(itemID)
     for _, detector in ipairs(detectors) do
         local collected, kind = detector(itemID)
         if collected ~= nil then
-            self.cache[itemID] = { collected = collected == true, kind = kind }
+            if ready then
+                self.cache[itemID] = { collected = collected == true, kind = kind }
+            end
             return collected == true, kind
         end
     end
     if tooltipKnown(itemID) then
-        self.cache[itemID] = { collected = true, kind = "Aprendido" }
+        if ready then
+            self.cache[itemID] = { collected = true, kind = "Aprendido" }
+        end
         return true, "Aprendido"
     end
-    self.cache[itemID] = { collected = false, kind = false }
+    if ready then
+        self.cache[itemID] = { collected = false, kind = false }
+    end
     return false, nil
 end
 
@@ -155,7 +189,14 @@ function Collections:Initialize()
     for _, event in ipairs({"TOYS_UPDATED", "PET_JOURNAL_LIST_UPDATE", "NEW_MOUNT_ADDED", "TRANSMOG_COLLECTION_UPDATED", "HEIRLOOMS_UPDATED", "NEW_RECIPE_LEARNED", "GET_ITEM_INFO_RECEIVED"}) do
         RB:RegisterEventSafe(frame, event)
     end
-    frame:SetScript("OnEvent", function() Collections:ClearCache() end)
+    frame:SetScript("OnEvent", function(_, event, arg1)
+        if event == "GET_ITEM_INFO_RECEIVED" then
+            -- Llega una vez por objeto: invalidar solo ese objeto, no todo el cache.
+            Collections:InvalidateItem(arg1)
+        else
+            Collections:ClearCache()
+        end
+    end)
     RB:RegisterCommand("collections", function(rest)
         rest = string.lower(tostring(rest or ""))
         if rest == "on" then RB:SetFeatureEnabled("collections", true)

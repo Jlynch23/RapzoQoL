@@ -25,6 +25,10 @@ local function safeCall(func, ...)
 end
 
 function RB:Print(message)
+    -- tostring() sobre un valor secreto lanza error en 12.x.
+    if type(issecretvalue) == "function" and issecretvalue(message) then
+        message = "<valor secreto>"
+    end
     DEFAULT_CHAT_FRAME:AddMessage(string.format("%s: %s", self.prefix, tostring(message)))
 end
 
@@ -35,12 +39,22 @@ function RB:RegisterEventSafe(frame, event)
     return pcall(frame.RegisterEvent, frame, event)
 end
 
+-- Misma normalizacion que GetNormalizedRealmName(): sin espacios, guiones ni
+-- apostrofes. GetNormalizedRealmName() puede devolver nil antes de PLAYER_LOGIN y
+-- el fallback GetRealmName() ("Quel'Thalas", "Tol Barad") generaba una clave de
+-- personaje distinta -> personaje fantasma duplicado en la DB.
+local function normalizeRealm(realm)
+    realm = tostring(realm or "")
+    realm = realm:gsub("[%s%-']", "")
+    return realm
+end
+
 function RB:GetRealmNameSafe()
     local realm = GetNormalizedRealmName and GetNormalizedRealmName()
     if not realm or realm == "" then
         realm = GetRealmName and GetRealmName() or "UnknownRealm"
     end
-    return realm
+    return normalizeRealm(realm)
 end
 
 function RB:GetPlayerNameSafe()
@@ -89,10 +103,63 @@ function RB:EnsureDB()
     if modules.hud == nil then modules.hud = true end
     if modules.expansionFilters == nil then modules.expansionFilters = true end
     if modules.reflectHerald == nil then modules.reflectHerald = true end
+    if modules.cooldownPulse == nil then modules.cooldownPulse = true end
+    if modules.combatText == nil then modules.combatText = false end
     if modules.config == nil then modules.config = true end
 
     self.db = db
+    if not self.characterKeysMigrated then
+        self.characterKeysMigrated = true
+        self:MigrateCharacterKeys()
+    end
     return db
+end
+
+-- Fusiona claves "Nombre-Reino Con Espacios" (creadas por versiones anteriores
+-- antes de PLAYER_LOGIN) con la clave normalizada "Nombre-ReinoConEspacios".
+-- Solo corre una vez por sesion; no reemplaza datos existentes, solo rellena.
+function RB:MigrateCharacterKeys()
+    local db = self.db
+    if type(db) ~= "table" or type(db.characters) ~= "table" then return end
+
+    local renames = {}
+    for key, character in pairs(db.characters) do
+        if type(character) == "table" then
+            local name = character.name or key:match("^(.-)%-") or key
+            local realm = character.realm or key:match("%-(.*)$") or ""
+            local canonical = string.format("%s-%s", name, normalizeRealm(realm))
+            if canonical ~= key then
+                renames[#renames + 1] = { from = key, to = canonical }
+            end
+        end
+    end
+
+    for _, rename in ipairs(renames) do
+        local ghost = db.characters[rename.from]
+        local target = db.characters[rename.to]
+        if type(target) ~= "table" then
+            ghost.key = rename.to
+            ghost.realm = normalizeRealm(ghost.realm)
+            db.characters[rename.to] = ghost
+        else
+            -- La clave canonica ya existe: conservar el mas reciente y rellenar
+            -- huecos con el fantasma (que normalmente solo tiene oro y lastSeen).
+            for _, bucketName in ipairs({"bags", "equipped", "bank"}) do
+                local targetBucket = type(target[bucketName]) == "table" and target[bucketName] or nil
+                local ghostBucket = type(ghost[bucketName]) == "table" and ghost[bucketName] or nil
+                if ghostBucket and (not targetBucket or next(targetBucket) == nil) and next(ghostBucket) ~= nil then
+                    target[bucketName] = ghostBucket
+                end
+            end
+            if (tonumber(ghost.lastSeen) or 0) > (tonumber(target.lastSeen) or 0) then
+                target.lastSeen = ghost.lastSeen
+                target.money = ghost.money or target.money
+            end
+            target.class = target.class or ghost.class
+            target.faction = target.faction or ghost.faction
+        end
+        db.characters[rename.from] = nil
+    end
 end
 
 function RB:IsFeatureEnabled(key, defaultValue)
@@ -360,8 +427,14 @@ function RB:ShowStatus()
     self:Print(string.format("v%s | %d personaje(s) | %d objeto(s) unicos", self.version, characterCount, #self:GetAllKnownItemIDs()))
 end
 
+-- Lista canonica de modulos con toggle. Config y ShowModules la comparten.
+RB.moduleKeys = {
+    "tooltip", "search", "vendor", "collections", "afk", "hud",
+    "expansionFilters", "reflectHerald", "cooldownPulse", "combatText", "config",
+}
+
 function RB:ShowModules()
-    local labels = {"tooltip", "search", "vendor", "collections", "afk", "hud", "expansionFilters", "config"}
+    local labels = self.moduleKeys
     self:Print("Modulos internos de Rapzo QoL:")
     for _, key in ipairs(labels) do
         local present = self:IsModulePresent(key)
@@ -371,9 +444,10 @@ function RB:ShowModules()
 end
 
 function RB:Initialize()
+    -- ADDON_LOADED: solo preparar DB y eventos. El personaje y el primer escaneo
+    -- se hacen en PLAYER_LOGIN, cuando reino y contenedores ya son fiables.
     self:EnsureDB()
     self:RefreshPrefix()
-    self:TouchCharacter()
     self:ApplyBagDirectionDelayed()
     if self.Scanner and self.Scanner.Initialize then self.Scanner:Initialize() end
 end
@@ -421,7 +495,10 @@ RB:RegisterCommand("reset", function(rest)
     RB.db = nil
     RB:EnsureDB(); RB:TouchCharacter()
     if RB.Scanner then RB.Scanner:ScanAll(RB.Scanner.bankOpen) end
-    RB:Print("Base de datos reiniciada.")
+    -- Los modulos guardan referencias a las tablas antiguas de settings; sin
+    -- recargar seguirian escribiendo en tablas huerfanas.
+    RB:Print("Base de datos reiniciada. Recargando la interfaz...")
+    if type(ReloadUI) == "function" then ReloadUI() end
 end)
 
 SLASH_RAPZOQOL1 = "/rapzo"
@@ -460,9 +537,16 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         local loadedAddon = ...
         if loadedAddon ~= RB.coreAddonName then return end
         if not initialized then initialized = true; RB:Initialize() end
-    elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+    elseif event == "PLAYER_LOGIN" then
         RB:EnsureDB(); RB:TouchCharacter(); RB:ApplyBagDirectionDelayed()
         if RB.Scanner and RB.Scanner.ScanAll then RB.Scanner:ScanAll(false) end
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        local isInitialLogin, isReload = ...
+        -- Login y /reload ya pasaron por PLAYER_LOGIN; solo cambios de mundo.
+        if not isInitialLogin and not isReload then
+            RB:TouchCharacter()
+            if RB.Scanner and RB.Scanner.ScheduleScan then RB.Scanner:ScheduleScan(false) end
+        end
     elseif event == "PLAYER_MONEY" then
         RB:TouchCharacter()
     end

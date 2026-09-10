@@ -87,6 +87,59 @@ local function setUnitFramesEnabled(enabled)
     db.settings.hud.unitFrames = enabled and true or false
 end
 
+-- Toggles de los modulos que no tienen setter propio o cuyo setter vive en el
+-- modulo (CooldownPulse/CombatText/ReflectHerald registran SetEnabled).
+local function isExpansionFilterEnabled() return RB:IsFeatureEnabled("expansionFilters") end
+local function setExpansionFilterEnabled(v) RB:SetFeatureEnabled("expansionFilters", v, true) end
+
+local function isReflectHeraldEnabled() return RB:IsFeatureEnabled("reflectHerald") end
+local function setReflectHeraldEnabled(v)
+    if RB.ReflectHerald and type(RB.ReflectHerald.SetEnabled) == "function" then
+        RB.ReflectHerald:SetEnabled(v)
+    else
+        RB:SetFeatureEnabled("reflectHerald", v, true)
+    end
+end
+
+local function isCooldownPulseEnabled() return RB:IsFeatureEnabled("cooldownPulse", true) end
+local function setCooldownPulseEnabled(v)
+    if RB.CooldownPulse and type(RB.CooldownPulse.SetEnabled) == "function" then
+        RB.CooldownPulse:SetEnabled(v)
+    else
+        RB:SetFeatureEnabled("cooldownPulse", v, true)
+    end
+end
+
+local function isCombatTextEnabled() return RB:IsFeatureEnabled("combatText", false) end
+local function setCombatTextEnabled(v)
+    if RB.CombatText and type(RB.CombatText.SetEnabled) == "function" then
+        RB.CombatText:SetEnabled(v)
+    else
+        RB:SetFeatureEnabled("combatText", v, true)
+    end
+end
+
+-- Estado real de un modulo para las listas de Config (hud = switch de Unit Frames).
+local function isModuleActive(key)
+    if key == "hud" then return areUnitFramesEnabled() end
+    if key == "combatText" then return RB:IsFeatureEnabled(key, false) end
+    return RB:IsFeatureEnabled(key)
+end
+
+local MODULE_LABELS = {
+    tooltip = "Tooltip", search = "Search", vendor = "Vendor", collections = "Collections",
+    afk = "AFK Screen", hud = "Unit Frames", expansionFilters = "Filtro expansion",
+    reflectHerald = "ReflectHerald", cooldownPulse = "Cooldown Pulse", combatText = "Combat Text",
+}
+
+local function getStatusModuleKeys()
+    local keys = {}
+    for _, key in ipairs(RB.moduleKeys or {}) do
+        if key ~= "config" then keys[#keys + 1] = key end
+    end
+    return keys
+end
+
 local function openAccentPicker()
     if not ColorPickerFrame or type(RB.GetAccentColor) ~= "function" then return end
 
@@ -152,13 +205,15 @@ function Config:CreateFrame()
     status:SetText("Estado de modulos")
 
     frame.statusLines = {}
-    local modules = { {"tooltip","Tooltip"}, {"search","Search"}, {"vendor","Vendor"}, {"collections","Collections"}, {"afk","AFK Screen"}, {"hud","Unit Frames"} }
-    local y = -112
-    for i, entry in ipairs(modules) do
+    -- Dos columnas de 5 para que quepan los diez modulos encima del divisor.
+    local keys = getStatusModuleKeys()
+    local perColumn = math.ceil(#keys / 2)
+    for i, key in ipairs(keys) do
+        local column = (i > perColumn) and 1 or 0
+        local row = column == 1 and (i - perColumn - 1) or (i - 1)
         local line = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        line:SetPoint("TOPLEFT", frame, "TOPLEFT", 28, y)
-        frame.statusLines[i] = {text=line, key=entry[1], label=entry[2]}
-        y = y - 22
+        line:SetPoint("TOPLEFT", frame, "TOPLEFT", 28 + column * 250, -112 - row * 22)
+        frame.statusLines[i] = {text=line, key=key, label=MODULE_LABELS[key] or key}
     end
 
     local divider = frame:CreateTexture(nil, "ARTWORK")
@@ -214,32 +269,34 @@ function Config:CreateFrame()
     divider2:SetHeight(1); divider2:SetPoint("TOPLEFT", frame, "TOPLEFT", 20, -352); divider2:SetPoint("RIGHT", frame, "RIGHT", -20, 0)
     divider2:SetColorTexture(0.45,0.55,0.65,0.35)
 
+    -- Dos columnas (x 22 y 280), siete filas de 32 px.
+    local LEFT, RIGHT = 22, 280
     frame.checks = {}
     frame.checks[#frame.checks+1] = makeCheck(frame, "Tooltip avanzado", -372,
         function() return RB:IsFeatureEnabled("tooltip") end,
         function(v) RB:SetFeatureEnabled("tooltip", v, true); local db=RB:EnsureDB(); db.settings.tooltip=v end,
-        function() return RB:IsModulePresent("tooltip") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Expansion del objeto", -404,
+        function() return RB:IsModulePresent("tooltip") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Expansion del objeto", -372,
         function() return RB:EnsureDB().settings.showItemExpansion ~= false end,
         function(v) RB:EnsureDB().settings.showItemExpansion=v end,
-        function() return RB:IsModulePresent("tooltip") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Tipo + Item ID", -436,
+        function() return RB:IsModulePresent("tooltip") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Tipo + Item ID", -404,
         function() local s=RB:EnsureDB().settings; return s.showItemType ~= false and s.showItemID ~= false end,
         function(v) local s=RB:EnsureDB().settings; s.showItemType=v; s.showItemID=v end,
-        function() return RB:IsModulePresent("tooltip") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Buscador global", -468,
+        function() return RB:IsModulePresent("tooltip") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Buscador global", -404,
         function() return RB:IsFeatureEnabled("search") end,
         function(v) RB:SetFeatureEnabled("search", v, true) end,
-        function() return RB:IsModulePresent("search") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Coleccionables (obtenido/no obtenido)", -500,
+        function() return RB:IsModulePresent("search") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Coleccionables (obtenido)", -436,
         function() return RB:IsFeatureEnabled("collections") end,
         function(v) RB:SetFeatureEnabled("collections", v, true); if RB.Collections and RB.Collections.ClearCache then RB.Collections:ClearCache() end end,
-        function() return RB:IsModulePresent("collections") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Vendedor extendido", -532,
+        function() return RB:IsModulePresent("collections") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Vendedor extendido", -436,
         function() local vendor=RB:EnsureDB().settings.vendor; return type(vendor) ~= "table" or vendor.enabled ~= false end,
         function(v) if RB.Vendor and RB.Vendor.SetEnabled then RB.Vendor:SetEnabled(v) else RB:SetFeatureEnabled("vendor",v,true) end end,
-        function() return RB:IsModulePresent("vendor") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Pantalla AFK", -564,
+        function() return RB:IsModulePresent("vendor") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Pantalla AFK", -468,
         function() return RB:IsFeatureEnabled("afk") end,
         function(v)
             if RB.AFK and RB.AFK.SetEnabled then
@@ -248,28 +305,39 @@ function Config:CreateFrame()
                 RB:SetFeatureEnabled("afk", v, true)
             end
         end,
-        function() return RB:IsModulePresent("afk") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Unit Frames Rapzo", -596,
+        function() return RB:IsModulePresent("afk") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Filtro expansion actual (AH)", -468,
+        isExpansionFilterEnabled, setExpansionFilterEnabled,
+        function() return RB:IsModulePresent("expansionFilters") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Unit Frames Rapzo", -500,
         areUnitFramesEnabled,
         setUnitFramesEnabled,
-        function() return RB:IsModulePresent("hud") end)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Minimapa cuadrado", -596,
+        function() return RB:IsModulePresent("hud") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Minimapa cuadrado", -500,
         isMinimapEnabled,
         setMinimapEnabled,
-        function() return RB:IsModulePresent("hud") end,
-        270)
-    frame.checks[#frame.checks+1] = makeCheck(frame, "Aro del mouse", -628,
+        function() return RB:IsModulePresent("hud") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Aro del mouse", -532,
         isCursorRingEnabled,
         setCursorRingEnabled,
-        function() return RB:IsModulePresent("hud") end)
+        function() return RB:IsModulePresent("hud") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "ReflectHerald (Spell Reflection)", -532,
+        isReflectHeraldEnabled, setReflectHeraldEnabled,
+        function() return RB:IsModulePresent("reflectHerald") end, RIGHT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Cooldown Pulse", -564,
+        isCooldownPulseEnabled, setCooldownPulseEnabled,
+        function() return RB:IsModulePresent("cooldownPulse") end, LEFT)
+    frame.checks[#frame.checks+1] = makeCheck(frame, "Combat Text", -564,
+        isCombatTextEnabled, setCombatTextEnabled,
+        function() return RB:IsModulePresent("combatText") end, RIGHT)
 
     local hudStyleLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    hudStyleLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 24, -664)
+    hudStyleLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 24, -606)
     hudStyleLabel:SetText("Estilo de Unit Frames")
 
     frame.hudStyleChecks = {
-        makeHUDStyleChoice(frame, "V1 - Clásico", 24, -682, 1),
-        makeHUDStyleChoice(frame, "V2 - ToxiUI", 190, -682, 2),
+        makeHUDStyleChoice(frame, "V1 - Clasico", 24, -624, 1),
+        makeHUDStyleChoice(frame, "V2 - ToxiUI", 190, -624, 2),
     }
 
     local reset = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
@@ -288,14 +356,7 @@ function Config:Refresh()
     local frame = self:CreateFrame()
     for _, line in ipairs(frame.statusLines or {}) do
         local loaded = RB:IsModulePresent(line.key)
-        local runtime
-        if line.key == "hud" then
-            -- modules.hud is always true (container); the real state is the
-            -- unit-frames switch. `and/or` would fall through when it is false.
-            runtime = areUnitFramesEnabled()
-        else
-            runtime = RB:IsFeatureEnabled(line.key)
-        end
+        local runtime = isModuleActive(line.key)
         line.text:SetText(string.format("%s: %s   Funcion: %s", line.label, loaded and "|cff38e66bLISTO|r" or "|cffef4444ERROR|r", runtime and "|cff38e66bON|r" or "|cffef4444OFF|r"))
     end
     for _, check in ipairs(frame.checks or {}) do check.refresh() end
@@ -452,77 +513,95 @@ function Config:CreateSettingsPanel()
     modulesTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -164)
     modulesTitle:SetText("Modulos")
 
+    -- Dos columnas (x 26 y 300) de siete filas: el canvas de Settings no tiene
+    -- scroll, asi que la altura total se mantiene por debajo de ~600 px.
+    local LEFT, RIGHT = 26, 300
     panel.settingsChecks = {}
     panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Tooltip avanzado", -192,
         function() return RB:IsFeatureEnabled("tooltip") end,
         function(v) RB:SetFeatureEnabled("tooltip", v, true); local db=RB:EnsureDB(); db.settings.tooltip=v end,
-        function() return RB:IsModulePresent("tooltip") end)
+        function() return RB:IsModulePresent("tooltip") end, LEFT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Expansion del objeto", -224,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Expansion del objeto", -192,
         function() return RB:EnsureDB().settings.showItemExpansion ~= false end,
         function(v) RB:EnsureDB().settings.showItemExpansion=v end,
-        function() return RB:IsModulePresent("tooltip") end)
+        function() return RB:IsModulePresent("tooltip") end, RIGHT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Tipo + Item ID", -256,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Tipo + Item ID", -224,
         function() local s=RB:EnsureDB().settings; return s.showItemType ~= false and s.showItemID ~= false end,
         function(v) local s=RB:EnsureDB().settings; s.showItemType=v; s.showItemID=v end,
-        function() return RB:IsModulePresent("tooltip") end)
+        function() return RB:IsModulePresent("tooltip") end, LEFT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Buscador global", -288,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Buscador global", -224,
         function() return RB:IsFeatureEnabled("search") end,
         function(v) RB:SetFeatureEnabled("search", v, true) end,
-        function() return RB:IsModulePresent("search") end)
+        function() return RB:IsModulePresent("search") end, RIGHT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Coleccionables (obtenido/no obtenido)", -320,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Coleccionables (obtenido)", -256,
         function() return RB:IsFeatureEnabled("collections") end,
         function(v) RB:SetFeatureEnabled("collections", v, true); if RB.Collections and RB.Collections.ClearCache then RB.Collections:ClearCache() end end,
-        function() return RB:IsModulePresent("collections") end)
+        function() return RB:IsModulePresent("collections") end, LEFT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Vendedor extendido", -352,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Vendedor extendido", -256,
         function() local vendor=RB:EnsureDB().settings.vendor; return type(vendor) ~= "table" or vendor.enabled ~= false end,
         function(v) if RB.Vendor and RB.Vendor.SetEnabled then RB.Vendor:SetEnabled(v) else RB:SetFeatureEnabled("vendor",v,true) end end,
-        function() return RB:IsModulePresent("vendor") end)
+        function() return RB:IsModulePresent("vendor") end, RIGHT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Pantalla AFK", -384,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Pantalla AFK", -288,
         function() return RB:IsFeatureEnabled("afk") end,
         function(v)
             if RB.AFK and RB.AFK.SetEnabled then RB.AFK:SetEnabled(v) else RB:SetFeatureEnabled("afk", v, true) end
         end,
-        function() return RB:IsModulePresent("afk") end)
+        function() return RB:IsModulePresent("afk") end, LEFT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Unit Frames Rapzo", -416,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Filtro expansion actual (AH)", -288,
+        isExpansionFilterEnabled, setExpansionFilterEnabled,
+        function() return RB:IsModulePresent("expansionFilters") end, RIGHT)
+
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Unit Frames Rapzo", -320,
         areUnitFramesEnabled,
         setUnitFramesEnabled,
-        function() return RB:IsModulePresent("hud") end)
+        function() return RB:IsModulePresent("hud") end, LEFT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Minimapa cuadrado", -416,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Minimapa cuadrado", -320,
         isMinimapEnabled,
         setMinimapEnabled,
-        function() return RB:IsModulePresent("hud") end,
-        250)
+        function() return RB:IsModulePresent("hud") end, RIGHT)
 
-    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Aro del mouse", -448,
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Aro del mouse", -352,
         isCursorRingEnabled,
         setCursorRingEnabled,
-        function() return RB:IsModulePresent("hud") end)
+        function() return RB:IsModulePresent("hud") end, LEFT)
+
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "ReflectHerald (Spell Reflection)", -352,
+        isReflectHeraldEnabled, setReflectHeraldEnabled,
+        function() return RB:IsModulePresent("reflectHerald") end, RIGHT)
+
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Cooldown Pulse", -384,
+        isCooldownPulseEnabled, setCooldownPulseEnabled,
+        function() return RB:IsModulePresent("cooldownPulse") end, LEFT)
+
+    panel.settingsChecks[#panel.settingsChecks + 1] = makeSettingsCheck(panel, "Combat Text", -384,
+        isCombatTextEnabled, setCombatTextEnabled,
+        function() return RB:IsModulePresent("combatText") end, RIGHT)
 
     local hudStyleTitle = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    hudStyleTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 26, -484)
+    hudStyleTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 26, -424)
     hudStyleTitle:SetText("Estilo de Unit Frames")
 
     panel.hudStyleChecks = {
-        makeHUDStyleChoice(panel, "V1 - Clásico", 26, -504, 1),
-        makeHUDStyleChoice(panel, "V2 - ToxiUI", 210, -504, 2),
+        makeHUDStyleChoice(panel, "V1 - Clasico", 26, -444, 1),
+        makeHUDStyleChoice(panel, "V2 - ToxiUI", 210, -444, 2),
     }
 
     local divider2 = panel:CreateTexture(nil, "ARTWORK")
     divider2:SetHeight(1)
-    divider2:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -546)
+    divider2:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -484)
     divider2:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
     divider2:SetColorTexture(0.45, 0.55, 0.65, 0.35)
 
     local statusTitle = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    statusTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -568)
+    statusTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -502)
     statusTitle:SetText("Estado")
 
     local status = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
@@ -533,7 +612,7 @@ function Config:CreateSettingsPanel()
 
     local hudPreview = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     hudPreview:SetSize(185, 26)
-    hudPreview:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -616)
+    hudPreview:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -550)
     hudPreview:SetText("Preview / depurar HUD")
     hudPreview:SetScript("OnClick", function()
         if RB.HUD and type(RB.HUD.ShowPreview) == "function" then
@@ -545,7 +624,7 @@ function Config:CreateSettingsPanel()
 
     local rescan = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     rescan:SetSize(150, 26)
-    rescan:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -650)
+    rescan:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -584)
     rescan:SetText("Reescanear ahora")
     rescan:SetScript("OnClick", function()
         if RB.Scanner then
@@ -595,17 +674,10 @@ function Config:RefreshSettingsPanel()
 
     if panel.statusText then
         local enabled, total = 0, 0
-        for _, key in ipairs({"tooltip", "search", "vendor", "collections", "afk", "hud"}) do
+        for _, key in ipairs(getStatusModuleKeys()) do
             if RB:IsModulePresent(key) then
                 total = total + 1
-                local active
-                if key == "hud" then
-                    -- modules.hud is always true; count the unit-frames switch.
-                    active = areUnitFramesEnabled()
-                else
-                    active = RB:IsFeatureEnabled(key)
-                end
-                if active then enabled = enabled + 1 end
+                if isModuleActive(key) then enabled = enabled + 1 end
             end
         end
         panel.statusText:SetText(string.format(

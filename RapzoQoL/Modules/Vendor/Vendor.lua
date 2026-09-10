@@ -74,7 +74,13 @@ local function safeCall(func, ...)
     return pcall(func, ...)
 end
 
+-- La configuracion se cachea: getConfig() se llama desde cada API de merchant
+-- envuelta (cientos de veces por MerchantFrame_Update). Solo la primera llamada
+-- pasa por EnsureDB/clamps; los setters escriben sobre la misma tabla.
+local cachedConfig
 local function getConfig()
+    if cachedConfig then return cachedConfig end
+
     local db = RB:EnsureDB()
     db.settings.vendor = type(db.settings.vendor) == "table" and db.settings.vendor or {}
     local cfg = db.settings.vendor
@@ -89,6 +95,7 @@ local function getConfig()
     cfg.rows = clamp(cfg.rows, MIN_ROWS, MAX_ROWS)
     cfg.columns = clamp(cfg.columns, MIN_COLUMNS, MAX_COLUMNS)
     RB:SetFeatureEnabled("vendor", cfg.enabled, true)
+    cachedConfig = cfg
     return cfg
 end
 
@@ -137,7 +144,8 @@ function Vendor:PrepareSlot(frame)
 
     local mark = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     mark:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -1)
-    mark:SetText("|cff38e66b✓ OBTENIDO|r")
+    -- Solo ASCII: las fuentes por defecto de WoW no tienen el caracter de check.
+    mark:SetText("|cff38e66bOBTENIDO|r")
     mark:SetJustifyH("RIGHT")
     mark:Hide()
     frame.RapzoBagsCollectedMark = mark
@@ -149,7 +157,18 @@ function Vendor:PrepareSlot(frame)
     frame.RapzoBagsOwnedCount = count
 
     if frame.ItemButton and type(frame.ItemButton.SetScript) == "function" then
+        -- Se conserva el OnEnter nativo para delegar en el cuando el modulo esta OFF:
+        -- asi la modificacion queda inerte sin necesidad de /reload.
+        local originalOnEnter = frame.ItemButton:GetScript("OnEnter")
+        frame.RapzoBagsOriginalOnEnter = originalOnEnter
+
         local function showTooltip(button)
+            if not getConfig().enabled then
+                if type(originalOnEnter) == "function" then
+                    return originalOnEnter(button)
+                end
+                return
+            end
             if MerchantFrame.selectedTab == 1 then
                 local visibleIndex = tonumber(button:GetID())
                 local originalIndex = Vendor:MapVisibleIndex(visibleIndex)
@@ -256,6 +275,16 @@ function Vendor:BuildFilteredIndices()
             self.filteredIndices[#self.filteredIndices + 1] = originalIndex
         end
     end
+
+    -- Blizzard no valida MerchantFrame.page: si el filtro acorta la lista, la
+    -- pagina actual puede quedar vacia. Se ajusta al rango filtrado.
+    if MerchantFrame and MerchantFrame.selectedTab == 1 then
+        local perPage = tonumber(MERCHANT_ITEMS_PER_PAGE) or 10
+        local pages = math.max(1, math.ceil(#self.filteredIndices / math.max(1, perPage)))
+        local page = tonumber(MerchantFrame.page) or 1
+        if page > pages then MerchantFrame.page = pages end
+        if page < 1 then MerchantFrame.page = 1 end
+    end
 end
 
 function Vendor:WrapMerchantAPIs()
@@ -285,51 +314,78 @@ function Vendor:WrapMerchantAPIs()
         return api.GetMerchantNumItems()
     end
 
+    -- Con filtro activo devuelve el indice real del vendedor o nil si el mapa aun
+    -- no cubre ese indice visible. NUNCA cae al indice crudo: entre un evento de
+    -- coleccion y el MerchantFrame_Update diferido los botones muestran el objeto
+    -- viejo, y con el fallback un clic podia comprar otro objeto.
     local function map(index)
         if Vendor:IsFilterActive() and MerchantFrame and MerchantFrame.selectedTab == 1 then
-            return Vendor:MapVisibleIndex(index) or index
+            return Vendor:MapVisibleIndex(index)
         end
         return index
     end
 
+    -- Lecturas: sin mapeo devuelven nil (Blizzard trata el slot como vacio).
+    -- Acciones (comprar/recoger): sin mapeo no hacen nada y fuerzan un refresh.
+    local function guardedRead(original)
+        return function(index, ...)
+            local real = map(index)
+            if real == nil then return nil end
+            return original(real, ...)
+        end
+    end
+    local function guardedAction(original)
+        return function(index, ...)
+            local real = map(index)
+            if real == nil then
+                Vendor:ScheduleRefresh()
+                return
+            end
+            return original(real, ...)
+        end
+    end
+
     if type(api.GetMerchantItemInfo) == "function" then
-        GetMerchantItemInfo = function(index) return api.GetMerchantItemInfo(map(index)) end
+        GetMerchantItemInfo = guardedRead(api.GetMerchantItemInfo)
     end
     if type(api.GetMerchantItemID) == "function" then
-        GetMerchantItemID = function(index) return api.GetMerchantItemID(map(index)) end
+        GetMerchantItemID = guardedRead(api.GetMerchantItemID)
     end
     if type(api.GetMerchantItemLink) == "function" then
-        GetMerchantItemLink = function(index) return api.GetMerchantItemLink(map(index)) end
+        GetMerchantItemLink = guardedRead(api.GetMerchantItemLink)
     end
     if type(api.CanAffordMerchantItem) == "function" then
-        CanAffordMerchantItem = function(index) return api.CanAffordMerchantItem(map(index)) end
+        CanAffordMerchantItem = guardedRead(api.CanAffordMerchantItem)
     end
     if type(api.GetMerchantItemCostInfo) == "function" then
-        GetMerchantItemCostInfo = function(index) return api.GetMerchantItemCostInfo(map(index)) end
+        GetMerchantItemCostInfo = guardedRead(api.GetMerchantItemCostInfo)
     end
     if type(api.GetMerchantItemCostItem) == "function" then
-        GetMerchantItemCostItem = function(index, costIndex) return api.GetMerchantItemCostItem(map(index), costIndex) end
+        GetMerchantItemCostItem = guardedRead(api.GetMerchantItemCostItem)
     end
     if type(api.BuyMerchantItem) == "function" then
-        BuyMerchantItem = function(index, quantity) return api.BuyMerchantItem(map(index), quantity) end
+        BuyMerchantItem = guardedAction(api.BuyMerchantItem)
     end
     if type(api.PickupMerchantItem) == "function" then
+        local guardedPickup = guardedAction(api.PickupMerchantItem)
         PickupMerchantItem = function(index)
             if index == 0 then return api.PickupMerchantItem(0) end
-            return api.PickupMerchantItem(map(index))
+            return guardedPickup(index)
         end
     end
     if type(api.GetMerchantItemMaxStack) == "function" then
-        GetMerchantItemMaxStack = function(index) return api.GetMerchantItemMaxStack(map(index)) end
+        GetMerchantItemMaxStack = guardedRead(api.GetMerchantItemMaxStack)
     end
 
-    C_MerchantFrame.GetItemInfo = function(index)
-        return api.CGetItemInfo(map(index))
+    -- Blizzard indexa el resultado como tabla (info.name...). Sin mapeo se
+    -- devuelve la info del indice crudo (solo afecta a la presentacion de un
+    -- frame en transicion; la compra ya esta protegida) para no provocar un error.
+    C_MerchantFrame.GetItemInfo = function(index, ...)
+        local real = map(index)
+        return api.CGetItemInfo(real or index, ...)
     end
     if type(api.CIsMerchantItemRefundable) == "function" then
-        C_MerchantFrame.IsMerchantItemRefundable = function(index)
-            return api.CIsMerchantItemRefundable(map(index))
-        end
+        C_MerchantFrame.IsMerchantItemRefundable = guardedRead(api.CIsMerchantItemRefundable)
     end
 
     self.apiWrapped = true
@@ -468,6 +524,11 @@ function Vendor:PositionMerchantBuyBackItem()
     MerchantBuyBackItem:SetPoint("BOTTOMRIGHT", MerchantFrame, "BOTTOMRIGHT", -15, 33)
 end
 
+-- Blizzard, dentro de MerchantFrame_UpdateBuybackInfo, reancla estos slots con
+-- su propio espaciado (-15). No hay que pisarlos con los puntos capturados en
+-- la pestana Compra (-8) o Recompra queda con el espaciado equivocado.
+local BUYBACK_NATIVE_ANCHORED = { [3] = true, [5] = true, [7] = true, [9] = true }
+
 function Vendor:RestoreBuybackLayout()
     if not MerchantFrame then return end
     if self.filterBar then self.filterBar:Hide() end
@@ -480,7 +541,7 @@ function Vendor:RestoreBuybackLayout()
     for i = 1, 12 do
         local frame = _G["MerchantItem" .. i]
         local pos = self.originalSlotPoints[i]
-        if frame and pos then
+        if frame and pos and not BUYBACK_NATIVE_ANCHORED[i] then
             frame:ClearAllPoints()
             frame:SetPoint(pos.point, pos.relativeTo, pos.relativePoint, pos.xOfs, pos.yOfs)
         end
@@ -560,9 +621,18 @@ function Vendor:LayoutMerchantSlots()
         end
     end
 
+    -- MerchantFrame_UpdateMerchantInfo termina SIEMPRE con MerchantItem11:Hide() y
+    -- MerchantItem12:Hide() (son slots de Recompra para Blizzard). En la grilla
+    -- de Rapzo esos dos slots forman parte de la pagina: hay que volver a
+    -- mostrarlos o quedan dos huecos invisibles por pagina.
+    for index = 1, total do
+        local frame = _G["MerchantItem" .. index]
+        if frame and not frame:IsShown() then frame:Show() end
+    end
+
     for i = total + 1, math.max(total, self.maxCreatedSlots or total) do
         local frame = _G["MerchantItem" .. i]
-        if frame and i > total then frame:Hide() end
+        if frame then frame:Hide() end
     end
 
     local baseWidth = self.originalFrameWidth or 336
@@ -573,11 +643,8 @@ function Vendor:LayoutMerchantSlots()
     local newHeight = baseHeight + FILTER_BAR_EXTRA_HEIGHT + extraRows * (itemHeight + ROW_GAP)
     MerchantFrame:SetSize(newWidth, newHeight)
     self:PositionMerchantBuyBackItem()
-
-    if MerchantFrameInset then
-        MerchantFrameInset:ClearPoint("RIGHT")
-        MerchantFrameInset:SetPoint("RIGHT", MerchantFrame, "RIGHT", -6, 0)
-    end
+    -- El Inset va anclado TOPLEFT/BOTTOMRIGHT al MerchantFrame y sigue solo el
+    -- nuevo tamano; no se le anade ningun anclaje extra (no seria reversible).
 end
 
 function Vendor:ApplyCollectedVisuals()
@@ -676,7 +743,7 @@ function Vendor:SetupMerchantFrame()
     end)
 
     hooksecurefunc("MerchantFrame_UpdateBuybackInfo", function()
-        if not Vendor.ready then return end
+        if not Vendor.ready or not getConfig().enabled then return end
         Vendor:RestoreBuybackLayout()
     end)
 
@@ -820,6 +887,33 @@ function Vendor:HandleSlash(rest)
     return true
 end
 
+-- Un solo refresh diferido por rafaga de eventos (GET_ITEM_INFO_RECEIVED llega
+-- una vez por objeto sin cachear). El mapa filtrado se reconstruye dentro del
+-- callback, justo antes de MerchantFrame_Update, para que mapa y botones
+-- cambien a la vez.
+function Vendor:ScheduleRefresh()
+    if self.refreshPending then return end
+    if not (self.ready and MerchantFrame and MerchantFrame:IsShown()) then return end
+
+    local function run()
+        Vendor.refreshPending = false
+        if not (MerchantFrame and MerchantFrame:IsShown()) then return end
+        Vendor:BuildFilteredIndices()
+        if MerchantFrame.selectedTab == 1 and type(MerchantFrame_Update) == "function" then
+            MerchantFrame_Update()
+        else
+            Vendor:Refresh()
+        end
+    end
+
+    if C_Timer and C_Timer.After then
+        self.refreshPending = true
+        C_Timer.After(0.05, run)
+    else
+        run()
+    end
+end
+
 function Vendor:Initialize()
     if self.initialized then
         return
@@ -877,23 +971,15 @@ function Vendor:Initialize()
         end
 
         if Vendor.ready and MerchantFrame and MerchantFrame:IsShown() then
-            Vendor:ClearCollectionCache()
-            Vendor:BuildFilteredIndices()
-            if C_Timer and C_Timer.After then
-                C_Timer.After(0.05, function()
-                    if MerchantFrame and MerchantFrame:IsShown() and MerchantFrame.selectedTab == 1 and type(MerchantFrame_Update) == "function" then
-                        MerchantFrame_Update()
-                    else
-                        Vendor:Refresh()
-                    end
-                end)
-            else
-                if MerchantFrame.selectedTab == 1 and type(MerchantFrame_Update) == "function" then
-                    MerchantFrame_Update()
-                else
-                    Vendor:Refresh()
+            if event == "GET_ITEM_INFO_RECEIVED" then
+                -- Solo invalida el objeto que llego; Collections hace lo mismo.
+                if RB.Collections and type(RB.Collections.InvalidateItem) == "function" then
+                    RB.Collections:InvalidateItem(arg1)
                 end
+            else
+                Vendor:ClearCollectionCache()
             end
+            Vendor:ScheduleRefresh()
         end
     end)
 

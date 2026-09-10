@@ -27,8 +27,10 @@ end
 
 local function formatMoney(value)
     value = tonumber(value) or 0
-    if GetCoinTextureString then
-        return GetCoinTextureString(value)
+    local formatter = (C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString) or GetCoinTextureString
+    if type(formatter) == "function" then
+        local ok, text = pcall(formatter, value)
+        if ok and text then return text end
     end
     return tostring(value)
 end
@@ -424,7 +426,7 @@ function Search:Show(query)
     local frame = self:CreateFrame()
     frame:Show()
     frame:Raise()
-    if query then
+    if query and trim(query) ~= "" then
         frame.edit:SetText(query)
         self:RenderSearch(query)
     else
@@ -449,17 +451,6 @@ function Search:ShowGold()
         DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s: %s", entry.name, formatMoney(entry.money)))
     end
     DEFAULT_CHAT_FRAME:AddMessage(string.format("  |cff38bdf8Total:|r %s", formatMoney(RB:GetTotalMoney())))
-end
-
-function Search:ShowStatus()
-    local db = RB:EnsureDB()
-    local characterCount = 0
-    for _ in pairs(db.characters) do characterCount = characterCount + 1 end
-    local uniqueItems = #RB:GetAllKnownItemIDs()
-    local accountItems = 0
-    for _ in pairs(db.account.bank or {}) do accountItems = accountItems + 1 end
-
-    RB:Print(string.format("v%s | %d personaje(s) | %d objeto(s) unicos | %d objeto(s) distintos en banco de banda de guerra", RB.version, characterCount, uniqueItems, accountItems))
 end
 
 

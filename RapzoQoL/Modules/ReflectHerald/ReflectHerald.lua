@@ -92,14 +92,25 @@ local function tryRegisterCombatLog()
     end
 end
 
-local function onActionBlocked(blockedAddon)
+local function onActionBlocked(blockedAddon, blockedFunction)
     -- nos atribuimos cualquier bloqueo del addon en la ventana corta tras nuestro intento:
     -- NO filtrar por nombre de funcion: el evento puede llegar atribuido a pcall()
-    -- (la pila del taint.log llega encabezada por pcall) y no a RegisterEvent
+    -- (la pila del taint.log llega encabezada por pcall) y no a RegisterEvent.
+    -- La ventana es corta (1.5 s): el bloqueo llega en el mismo frame o el siguiente,
+    -- y en PLAYER_LOGIN el HUD/Vendor tambien pueden provocar bloqueos propios.
     if not combatLogAttemptAt then return end
     if blockedAddon ~= addonName then return end
-    if (GetTime() - combatLogAttemptAt) > 5 then return end
+    if (GetTime() - combatLogAttemptAt) > 1.5 then return end
+    -- se guarda la funcion bloqueada para poder afinar con el proximo taint.log
+    if blockedFunction ~= nil and not (type(issecretvalue) == "function" and issecretvalue(blockedFunction)) then
+        getSettings().lastBlockedFunction = tostring(blockedFunction)
+    end
     markCombatLogBlocked()
+end
+
+function ReflectHerald:SetEnabled(enabled)
+    RB:SetFeatureEnabled("reflectHerald", enabled and true or false, true)
+    if enabled then tryRegisterCombatLog() end
 end
 
 frame:SetScript("OnEvent", function(_, event, arg1, arg2)
@@ -110,7 +121,7 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
             tryRegisterCombatLog()
         end
     elseif event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
-        onActionBlocked(arg1)
+        onActionBlocked(arg1, arg2)
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         onCombatLogEvent()
     end
@@ -139,10 +150,11 @@ function ReflectHerald:HandleSlash(rest)
     local command, arg = rest:match("^%s*(%S*)%s*(%S*)")
     command = command or ""
     if command == "on" then
-        RB:SetFeatureEnabled("reflectHerald", true)
-        tryRegisterCombatLog()
+        self:SetEnabled(true)
+        RB:Print("ReflectHerald: ON")
     elseif command == "off" then
-        RB:SetFeatureEnabled("reflectHerald", false)
+        self:SetEnabled(false)
+        RB:Print("ReflectHerald: OFF")
     elseif command == "party" then
         local settings = getSettings()
         if arg == "on" then

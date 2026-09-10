@@ -16,7 +16,6 @@ Modules\Collections\Collections.lua
 Modules\Vendor\Vendor.lua
 Modules\QoL\ExpansionFilters.lua
 Modules\AFK\AFK.lua
-Modules\AFK\AFKBrand.lua
 Modules\ReflectHerald\ReflectHerald.lua
 Modules\CooldownPulse\CooldownPulse.lua
 Modules\CombatText\CombatText.lua
