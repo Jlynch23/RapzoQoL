@@ -14,6 +14,7 @@ Modules\Tooltip\Tooltip.lua
 Modules\Search\Search.lua
 Modules\Collections\Collections.lua
 Modules\Vendor\Vendor.lua
+Modules\Vendor\BulkBuy.lua
 Modules\QoL\ExpansionFilters.lua
 Modules\AFK\AFK.lua
 Modules\ReflectHerald\ReflectHerald.lua
